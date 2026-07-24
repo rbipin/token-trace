@@ -78,27 +78,25 @@ export default function Heatmap({ refreshKey = 0 }) {
   const monthLabels = buildMonthLabels(weeks);
 
   return (
-    <div className="card">
-      <h4>Activity (last {DAYS_BACK} days)</h4>
-      <div className="heatmap-wrapper">
-        <div className="heatmap-months" aria-hidden="true">
+    <div className="bg-card dark:bg-card-dark border border-border dark:border-border-dark rounded-xl p-4 mb-4">
+      <h4 className="text-xs uppercase tracking-wide opacity-60 mb-2">Activity (last {DAYS_BACK} days)</h4>
+      <div className="flex flex-col gap-1 overflow-x-auto">
+        <div className="grid grid-flow-col auto-cols-[10px] gap-[3px] h-3" aria-hidden="true">
           {monthLabels.map((label, i) => (
-            <div key={i} className="heatmap-month-label">
+            <div key={i} className="text-[9px] opacity-60 whitespace-nowrap">
               {label || ""}
             </div>
           ))}
         </div>
-        <div className="heatmap-grid" role="group" aria-label={`Daily token activity for the last ${DAYS_BACK} days`}>
+        <div
+          className="grid grid-flow-col grid-rows-7 auto-cols-[10px] gap-[3px]"
+          role="group"
+          aria-label={`Daily token activity for the last ${DAYS_BACK} days`}
+        >
           {weeks.map((week) =>
             week.map((d) => {
               if (d.placeholder) {
-                return (
-                  <div
-                    key={d.date}
-                    className="heatmap-cell placeholder"
-                    aria-hidden="true"
-                  />
-                );
+                return <div key={d.date} className="w-[10px] h-[10px] rounded-sm" aria-hidden="true" />;
               }
               const intensity = max ? d.tokens / max : 0;
               const hasData = d.tokens > 0;
@@ -110,7 +108,11 @@ export default function Heatmap({ refreshKey = 0 }) {
                   aria-label={label}
                   title={label}
                   tabIndex={0}
-                  className={`heatmap-cell ${hasData ? "has-data" : "empty"}`}
+                  className={
+                    hasData
+                      ? "w-[10px] h-[10px] rounded-sm bg-accent focus-visible:outline focus-visible:outline-2"
+                      : "w-[10px] h-[10px] rounded-sm bg-border dark:bg-border-dark focus-visible:outline focus-visible:outline-2"
+                  }
                   style={hasData ? { opacity: 0.25 + intensity * 0.75 } : undefined}
                 />
               );
@@ -118,7 +120,7 @@ export default function Heatmap({ refreshKey = 0 }) {
           )}
         </div>
       </div>
-      <div className="heatmap-legend">Less → More</div>
+      <div className="text-xs opacity-60 mt-2">Less → More</div>
     </div>
   );
 }
