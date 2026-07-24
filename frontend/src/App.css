@@ -1,3 +1,20 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+@theme {
+  --color-bg: #f5f6f8;
+  --color-card: #ffffff;
+  --color-border: #dfe1e6;
+  --color-fg: #1a1c22;
+  --color-bg-dark: #0a0b0d;
+  --color-card-dark: #12141a;
+  --color-border-dark: #2a2e3a;
+  --color-fg-dark: #e6e8ef;
+  --color-accent: #22c55e;
+  --color-accent-purple: #a78bfa;
+}
+
 :root[data-theme="dark"] {
   --bg: #12141a; --card-bg: #1b1e27; --text: #e6e8ef; --border: #2a2e3a;
 }
