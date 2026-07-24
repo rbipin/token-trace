@@ -24,13 +24,6 @@
 body { margin: 0; background: var(--bg); color: var(--text); font-family: system-ui, sans-serif; }
 .card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
 .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-.project-list li:focus-visible { outline: 2px solid var(--text); outline-offset: 1px; }
 .legend { display: flex; gap: 16px; margin-top: 8px; font-size: 12px; flex-wrap: wrap; }
 .legend-item { display: flex; align-items: center; gap: 4px; }
 .legend-item i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
-.bar-track { height: 8px; background: var(--border); border-radius: 4px; overflow: hidden; }
-.bar-track.small { display: inline-block; width: 60px; margin-right: 6px; vertical-align: middle; }
-.bar-fill { height: 100%; background: #5b8def; }
-.project-list { list-style: none; padding: 0; margin: 0; }
-.project-list li { padding: 8px; border-radius: 6px; cursor: pointer; display: grid; grid-template-columns: 1fr 100px 60px; gap: 8px; align-items: center; }
-.project-list li.selected { background: var(--bg); font-weight: 600; }
