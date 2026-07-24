@@ -1,13 +1,12 @@
 import { useEffect, useState } from "react";
 import { getSummary } from "../api.js";
 import RangeTabs from "../components/RangeTabs.jsx";
-import StatsCard from "../components/StatsCard.jsx";
+import StatsRow from "../components/StatsRow.jsx";
 import SyncLogCard from "../components/SyncLogCard.jsx";
 import Heatmap from "../components/Heatmap.jsx";
 import TrendChart from "../components/TrendChart.jsx";
 import HarnessCards from "../components/HarnessCards.jsx";
 import ContextBreakdown from "../components/ContextBreakdown.jsx";
-import ModelTable from "../components/ModelTable.jsx";
 
 export default function TokensPage() {
   const [summary, setSummary] = useState(null);
@@ -23,7 +22,7 @@ export default function TokensPage() {
     <div>
       <RangeTabs value={range} onChange={setRange} />
       <div className="grid-2">
-        <StatsCard summary={summary} />
+        <StatsRow summary={summary} />
         <SyncLogCard refreshKey={refreshKey} />
       </div>
       <Heatmap refreshKey={refreshKey} />
@@ -33,7 +32,6 @@ export default function TokensPage() {
         <HarnessCards summary={summary} />
       </div>
       <ContextBreakdown summary={summary} />
-      <ModelTable summary={summary} />
     </div>
   );
 }
