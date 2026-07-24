@@ -15,15 +15,4 @@
   --color-accent-purple: #a78bfa;
 }
 
-:root[data-theme="dark"] {
-  --bg: #12141a; --card-bg: #1b1e27; --text: #e6e8ef; --border: #2a2e3a;
-}
-:root[data-theme="light"] {
-  --bg: #f5f6f8; --card-bg: #ffffff; --text: #1a1c22; --border: #dfe1e6;
-}
-body { margin: 0; background: var(--bg); color: var(--text); font-family: system-ui, sans-serif; }
-.card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
-.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-.legend { display: flex; gap: 16px; margin-top: 8px; font-size: 12px; flex-wrap: wrap; }
-.legend-item { display: flex; align-items: center; gap: 4px; }
-.legend-item i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+body { margin: 0; font-family: system-ui, sans-serif; }
