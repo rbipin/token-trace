@@ -13,7 +13,7 @@ The current app already shares the same structural bones as the target (sidebar 
 - Full layout match to `docs/design/dashboard.html`: branding header, hero "Total Tokens" number, range tabs, fixed rolling-stat row, restyled cards, and a restructured By Project detail panel.
 - Range tabs: **Day / Week / Month / Total**, all fully functional, backed by the existing `day` / `week` / `month` / `all` periods in `src/dashboard/queries.py`. No Custom tab, no date-range picker.
 - The rolling-stat row (7d / 30d / avg / month totals, "Started" date, "Active days" count) is **fixed** — it always shows these rolling windows regardless of which range tab is selected. Only the hero "Total Tokens" number, the context-breakdown bar, and the model/harness breakdowns react to the selected range tab.
-- Model breakdown: a single consolidated table only (drop the compact top-3 mini-list variant seen in the reference design).
+- Model breakdown: the top-left short model list (top-N models by %, part of the fixed rolling-stat card, alongside Started/Active days) is the only model view. The standalone "Model breakdown" table lower on the page is dropped entirely — there is no second, consolidated model table anywhere on the page.
 - The segmented gradient bar under the hero number represents **Context Breakdown** proportions (Messages / Tool calls / Reasoning / System prompt / Custom agents / MCP servers / Skills) — not harness split.
 - **Out of scope**: "Limits" sidebar nav item, "Share" header button, custom date-range picking. None of these are built, not even as disabled placeholders.
 - No new pages beyond the existing Tokens and By Project pages.
@@ -46,10 +46,10 @@ The current app already shares the same structural bones as the target (sidebar 
 
 - `App.jsx` — add a sidebar branding header (logo mark + "Token Trace" wordmark). Nav stays Tokens + By Project only (no Limits item).
 - New `RangeTabs.jsx` — Day/Week/Month/Total selector; lifts `period` state up to the owning page.
-- New `StatsRow.jsx` — renders the fixed 7d/30d/avg/month/Started/Active-days cards from `summary().rolling`, `summary().active_days`, and `summary().first_date`.
+- New `StatsRow.jsx` — renders the fixed 7d/30d/avg/month/Started/Active-days cards from `summary().rolling`, `summary().active_days`, and `summary().first_date`, plus a short top-N model list (from `summary().models`, already sorted by descending token share) in the same card. This is the only place models are shown.
 - `TokensPage.jsx` — hosts the hero "Total Tokens" number and the Context Breakdown segmented bar beneath it (both driven by the selected range tab); header gains a "Most recent data: <timestamp> (<Xm> ago)" badge with relative-time formatting, sourced from `/api/meta`.
 - `HarnessCards.jsx` — restyled into the larger icon+percentage grid layout from the reference design; same data shape (`summary().harnesses`).
-- `ModelTable.jsx` — restyled as the single consolidated breakdown list; no mini-list mode.
+- `ModelTable.jsx` is removed; its short-list rendering moves into `StatsRow.jsx` as described above.
 - `Heatmap.jsx`, `TrendChart.jsx`, `SyncLogCard.jsx` — visual restyle only; props/data unchanged.
 - New `HarnessSplit.jsx` — used on the By Project detail panel; percentage list by source, styled like `ContextBreakdown` but keyed off `summary().harnesses` for the selected project.
 - `ProjectsPage.jsx` — restructured into a left "Top projects" list (existing `ProjectList`, restyled) and a right detail panel for the selected project: total tokens, `HarnessSplit`, `ContextBreakdown`.
