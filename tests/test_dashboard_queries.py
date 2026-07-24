@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 
@@ -57,6 +57,56 @@ def test_summary_totals_and_harnesses(tmp_db):
     claude = next(h for h in result["harnesses"] if h["source"] == "claude_cli")
     assert claude["tokens"] == 150
     assert round(claude["pct"], 4) == round(150 / 350, 4)
+
+
+def test_summary_rolling_totals(tmp_db):
+    store = SqliteStore(tmp_db)
+    today = date.today()
+    d0 = today.isoformat()
+    d5 = (today - timedelta(days=5)).isoformat()
+    d20 = (today - timedelta(days=20)).isoformat()
+    d40 = (today - timedelta(days=40)).isoformat()
+    store.upsert([
+        _rec("s1", d0, input_tokens=100),
+        _rec("s2", d5, input_tokens=50),
+        _rec("s3", d20, input_tokens=200),
+        _rec("s4", d40, input_tokens=999),
+    ])
+    rolling = queries.summary(_conn(tmp_db), "all")["rolling"]
+    assert rolling["7d"]["total_tokens"] == 150
+    assert rolling["30d"]["total_tokens"] == 350
+    assert rolling["30d"]["active_days"] == 3
+    assert round(rolling["avg_per_active_day"], 4) == round(350 / 3, 4)
+
+
+def test_summary_rolling_zero_active_days(tmp_db):
+    SqliteStore(tmp_db)  # creates schema, no rows
+    result = queries.summary(_conn(tmp_db), "all")
+    assert result["rolling"]["30d"]["active_days"] == 0
+    assert result["rolling"]["avg_per_active_day"] == 0.0
+    assert result["rolling"]["7d"]["total_tokens"] == 0
+    assert result["rolling"]["month"]["total_tokens"] == 0
+
+
+def test_summary_rolling_respects_project_filter(tmp_db):
+    store = SqliteStore(tmp_db)
+    today = date.today().isoformat()
+    store.upsert([
+        _rec("s1", today, input_tokens=100, project="proj-a"),
+        _rec("s2", today, input_tokens=300, project="proj-b"),
+    ])
+    result = queries.summary(_conn(tmp_db), "all", project="proj-a")
+    assert result["rolling"]["7d"]["total_tokens"] == 100
+
+
+def test_summary_rolling_independent_of_period(tmp_db):
+    """rolling must reflect real last-7d/30d/month windows, not the period filter."""
+    store = SqliteStore(tmp_db)
+    today = date.today().isoformat()
+    store.upsert([_rec("s1", today, input_tokens=100)])
+    result = queries.summary(_conn(tmp_db), "day")
+    assert result["rolling"]["7d"]["total_tokens"] == 100
+    assert result["rolling"]["30d"]["total_tokens"] == 100
 
 
 def test_summary_empty_db_returns_zeros(tmp_db):

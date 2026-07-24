@@ -31,6 +31,29 @@ def _last_n_days_filter(days: int) -> tuple[str, list]:
     return "date >= date('now', ?, 'localtime')", [f"-{days - 1} days"]
 
 
+def _rolling_stats(conn: sqlite3.Connection, extra: str, params: list) -> dict:
+    def window(where: str, wparams: list) -> tuple[int, int]:
+        row = conn.execute(f"""
+            SELECT COALESCE(SUM({_TOKENS_EXPR}), 0) AS tokens,
+                   COUNT(DISTINCT date) AS active_days
+            FROM sessions
+            WHERE {where}{extra}
+        """, wparams + params).fetchone()
+        return row["tokens"], row["active_days"]
+
+    tokens_7d, _ = window(*_last_n_days_filter(7))
+    tokens_30d, active_days_30d = window(*_last_n_days_filter(30))
+    tokens_month, _ = window(_DATE_RANGE_SQL["month"], [])
+    avg = (tokens_30d / active_days_30d) if active_days_30d else 0.0
+
+    return {
+        "7d": {"total_tokens": tokens_7d},
+        "30d": {"total_tokens": tokens_30d, "active_days": active_days_30d},
+        "month": {"total_tokens": tokens_month},
+        "avg_per_active_day": avg,
+    }
+
+
 def summary(
     conn: sqlite3.Connection,
     period: str,
@@ -61,6 +84,8 @@ def summary(
         FROM sessions
         WHERE {where}{extra}
     """, params).fetchone()
+
+    rolling = _rolling_stats(conn, extra, params)
 
     total_tokens = (
         totals["input_tokens"] + totals["output_tokens"]
@@ -108,6 +133,7 @@ def summary(
             {"model": r["model"], "tokens": r["tokens"], "pct": pct(r["tokens"])}
             for r in model_rows
         ],
+        "rolling": rolling,
     }
 
 
