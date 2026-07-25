@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
 
@@ -46,3 +47,48 @@ def test_resolve_executable_raises_when_neither_found(monkeypatch, tmp_path):
     monkeypatch.setattr(schedule, "_TRACKER_PY_PATH", tmp_path / "missing_tracker.py")
     with pytest.raises(FileNotFoundError):
         schedule.resolve_executable()
+
+
+def test_build_plist_contains_expected_fields():
+    xml = schedule.build_plist(23, 50, ["tokentracer", "collect", "--lookback", "1"])
+    assert "<string>com.ai-token-tracer</string>" in xml
+    assert "<integer>23</integer>" in xml
+    assert "<integer>50</integer>" in xml
+    assert "<string>tokentracer</string>" in xml
+    assert "<string>collect</string>" in xml
+
+
+def test_schedule_macos_writes_plist_and_loads(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(schedule.subprocess, "run",
+                         lambda args, **kw: calls.append(args) or subprocess.CompletedProcess(args, 0))
+    monkeypatch.setattr(schedule, "_PLIST_PATH", tmp_path / "LaunchAgents" / f"{schedule.LABEL}.plist")
+    monkeypatch.setattr(schedule.shutil, "which", lambda name: "/usr/local/bin/tokentracer")
+
+    schedule.schedule_macos(23, 50)
+
+    assert schedule._PLIST_PATH.exists()
+    assert "<integer>23</integer>" in schedule._PLIST_PATH.read_text()
+    assert calls[0][:2] == ["launchctl", "unload"]
+    assert calls[-1][:2] == ["launchctl", "load"]
+
+
+def test_unschedule_macos_removes_existing_job(monkeypatch, tmp_path):
+    plist = tmp_path / f"{schedule.LABEL}.plist"
+    plist.write_text("<plist></plist>")
+    monkeypatch.setattr(schedule, "_PLIST_PATH", plist)
+    calls = []
+    monkeypatch.setattr(schedule.subprocess, "run",
+                         lambda args, **kw: calls.append(args) or subprocess.CompletedProcess(args, 0))
+
+    result = schedule.unschedule_macos()
+
+    assert result is True
+    assert not plist.exists()
+    assert calls[0][:2] == ["launchctl", "unload"]
+
+
+def test_unschedule_macos_noop_when_nothing_registered(monkeypatch, tmp_path):
+    monkeypatch.setattr(schedule, "_PLIST_PATH", tmp_path / "missing.plist")
+    result = schedule.unschedule_macos()
+    assert result is False

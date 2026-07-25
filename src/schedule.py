@@ -47,3 +47,65 @@ def resolve_executable() -> list[str]:
             f"neither 'tokentracer' on PATH nor tracker.py at {_TRACKER_PY_PATH}"
         )
     return [sys.executable, str(_TRACKER_PY_PATH)]
+
+
+_PLIST_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{label}</string>
+
+    <key>ProgramArguments</key>
+    <array>
+{prog_args}
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>{hour}</integer>
+        <key>Minute</key>
+        <integer>{minute}</integer>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>{log_path}</string>
+
+    <key>StandardErrorPath</key>
+    <string>{log_path}</string>
+</dict>
+</plist>
+"""
+
+
+def build_plist(hour: int, minute: int, prog_args: list[str]) -> str:
+    """Render the launchd plist XML for the given time and program arguments."""
+    args_xml = "\n".join(f"        <string>{arg}</string>" for arg in prog_args)
+    return _PLIST_TEMPLATE.format(
+        label=LABEL, prog_args=args_xml, hour=hour, minute=minute, log_path=_LOG_PATH
+    )
+
+
+def schedule_macos(hour: int, minute: int) -> None:
+    """Register (or silently replace) the daily launchd job on macOS."""
+    prog_args = resolve_executable() + ["collect", "--lookback", "1"]
+    plist_xml = build_plist(hour, minute, prog_args)
+    _PLIST_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["launchctl", "unload", str(_PLIST_PATH)], capture_output=True)
+    _PLIST_PATH.write_text(plist_xml, encoding="utf-8")
+    subprocess.run(["launchctl", "load", str(_PLIST_PATH)], check=True, capture_output=True)
+
+
+def unschedule_macos() -> bool:
+    """Remove the daily launchd job on macOS. Returns False if none was registered."""
+    if not _PLIST_PATH.exists():
+        return False
+    subprocess.run(["launchctl", "unload", str(_PLIST_PATH)], capture_output=True)
+    _PLIST_PATH.unlink()
+    return True
