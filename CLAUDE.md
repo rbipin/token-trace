@@ -47,6 +47,10 @@ python3 tracker.py config set context work   # label this machine's usage ("work
 # List local project identities (project key → guid → whimsical name; never synced)
 python3 tracker.py projects
 
+# Schedule the daily collector natively (macOS launchd / Windows Task Scheduler)
+python3 tracker.py schedule 23:50    # registers/replaces a daily "collect --lookback 1" job
+python3 tracker.py unschedule        # removes it
+
 # Sync unsynced records to configured remote stores (e.g., Supabase)
 python3 tracker.py sync
 python3 tracker.py sync --dry-run   # show pending counts without pushing
@@ -61,7 +65,7 @@ No build step — standard library only at runtime. Install `pytest` for testing
 
 **Packaging**: `pyproject.toml` defines the `tokentracer` console script. Install locally with `pipx install .` or `uv tool install .`. Default db path when installed: `~/.tokentracer/usage.db`.
 
-`register-task.ps1` / `register-task.sh` are helpers to register the collector as a scheduled task (Windows Task Scheduler / macOS launchd).
+`tracker.py schedule <HH:MM>` / `tracker.py unschedule` (`src/commands/schedule.py`, `src/schedule.py`) natively register/remove the collector as a scheduled task (Windows Task Scheduler / macOS launchd) — no separate scripts required.
 
 ## Architecture
 
@@ -77,8 +81,10 @@ src/
     report.py            ReportCommand
     config.py            ConfigCommand (owns its own set sub-dispatch)
     projects.py          ProjectsCommand
+    schedule.py           ScheduleCommand / UnscheduleCommand — native daily "collect --lookback 1" job (see src/schedule.py)
     sync.py              SyncCommand, using common.run_sync() for its push/retry logic
     common.py            load_remote_stores helper + run_sync(sqlite_store, remote_stores, dry_run) core push/retry logic, shared by collect and sync
+  schedule.py             OS-native scheduling helpers: parse_time, resolve_executable, plus macOS (launchd) and Windows (Task Scheduler) schedule_*/unschedule_* functions
   models.py              SessionRecord frozen dataclass (has canonical_model field); merge_records deduplicates by (session_id, source, model)
   middleware/            Pluggable RecordMiddleware chain (Pipes-and-Filters), run in TrackerPipeline.run() after merge_records, before upsert
     base.py              RecordMiddleware Protocol: name, applies(records) -> bool, process(records) -> list[SessionRecord]
@@ -121,7 +127,7 @@ Stores implement the `SessionStore` Protocol in `src/stores/__init__.py` (`name:
 - **Discovery**: `load_store_registry()` in `src/stores/registry.py` discovers stores via the `tokentracer.stores` entry-point group (declared in `pyproject.toml`). When the package isn't installed (repo checkout), it falls back to the built-ins: `sqlite` and `supabase`.
 - **Instantiation**: `instantiate_store(name, params, class_path=None)` expands `${VAR}` env placeholders in `params`, then constructs the store — via `class_path` (dotted import path, bypasses the registry) if given, else by registry name.
 - **Sync flow**: `tracker.py sync` reads `[stores.*]` from `~/.tokentracer/.tokentracer.toml`, and for each remote store pushes rows the SqliteStore reports as unsynced (`unsynced_for(store_name)`), then marks them synced per store. `--dry-run` prints pending counts only. Failed stores are reported without blocking others; stores are always closed in a `finally`. This push/retry logic lives in `run_sync()` (`src/commands/common.py`), shared by `sync` and by `collect`'s post-run sweep below.
-- **Collect also syncs**: `tracker.py collect` pushes freshly-collected records to remote stores inline as part of the pipeline run (`TrackerPipeline.run()`), marking each successful push synced immediately. After that, if any remote stores are configured, `collect` calls `run_sync()` once more to sweep and retry anything still marked unsynced — records whose remote push failed in this run or a prior one. In steady state (no failures) the sweep finds nothing pending and prints nothing; it only surfaces output (`Synced N pending record(s) to <store>`, or a `Warning [<store>]: ...` on failure) when there's something to report. This means the scheduled task (`register-task.sh` / `register-task.ps1`, which only ever calls `collect`) is self-healing without a second scheduled sync job.
+- **Collect also syncs**: `tracker.py collect` pushes freshly-collected records to remote stores inline as part of the pipeline run (`TrackerPipeline.run()`), marking each successful push synced immediately. After that, if any remote stores are configured, `collect` calls `run_sync()` once more to sweep and retry anything still marked unsynced — records whose remote push failed in this run or a prior one. In steady state (no failures) the sweep finds nothing pending and prints nothing; it only surfaces output (`Synced N pending record(s) to <store>`, or a `Warning [<store>]: ...` on failure) when there's something to report. This means the scheduled task (registered via `tracker.py schedule`, which only ever calls `collect`) is self-healing without a second scheduled sync job.
 
 **Built-in remote store — Supabase** (`src/stores/supabase.py`): upserts rows into a `token_sessions` table with `on_conflict="session_id,source,model"` (mirrors the local primary key). Lazy client creation on first upsert; requires optional dep `supabase>=2.0` (`pip install tokentracer[supabase]`). The upserted payload includes `tool_calls`, `reasoning_tokens`, and `context_peak_tokens`; the remote `token_sessions` table must have those bigint columns. Configure with:
 
