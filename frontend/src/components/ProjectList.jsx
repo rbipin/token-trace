@@ -3,13 +3,33 @@ import { useThemeCtx } from "../theme.js";
 
 export default function ProjectList({ projects, selected, onSelect }) {
   const { accent } = useThemeCtx();
-  const max = Math.max(1, ...projects.map((p) => p.tokens));
+  const top5 = projects.slice(0, 5);
+  const max = Math.max(1, ...top5.map((p) => p.tokens));
   return (
     <div className="border border-border dark:border-border-dark rounded-[14px] px-6 pt-[22px] pb-[26px] bg-card dark:bg-card-dark">
       <div className="font-bold text-[15px] mb-1">Top projects</div>
       <div className="text-xs text-subtext dark:text-subtext-dark mb-[18px]">by total token count</div>
+
+      {projects.length > 0 && (
+        <select
+          className="tt-tab w-full mb-4 px-2.5 py-2 border border-border dark:border-border-dark rounded-[9px] text-[13px] font-medium bg-transparent"
+          value={selected ?? ""}
+          onChange={(e) => onSelect(e.target.value)}
+          aria-label="Jump to project"
+        >
+          <option value="" disabled>
+            Jump to project…
+          </option>
+          {projects.map((p) => (
+            <option key={p.project} value={p.project}>
+              {p.project} — {formatTokens(p.tokens).abbreviated}
+            </option>
+          ))}
+        </select>
+      )}
+
       <div className="flex flex-col">
-        {projects.map((p) => {
+        {top5.map((p) => {
           const active = p.project === selected;
           return (
             <div

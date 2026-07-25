@@ -37,13 +37,15 @@ export default function ProjectsPage() {
                 Selected project
               </div>
               <div className="font-extrabold text-2xl font-mono mt-1.5">{selected}</div>
-              <div className="flex items-baseline gap-3.5 mt-2.5">
+              <div className="flex items-baseline gap-3.5 flex-wrap mt-2.5">
                 <span className="font-extrabold text-[clamp(30px,4vw,42px)] leading-[1.05] tracking-[-0.02em]">
                   {detail ? formatTokens(detail.total_tokens).full : "—"}
                 </span>
-                <span className="font-semibold text-base" style={{ color: accent }}>
-                  tokens
-                </span>
+                {detail && (
+                  <span className="font-bold text-base" style={{ color: accent }}>
+                    {formatTokens(detail.total_tokens).abbreviated}
+                  </span>
+                )}
               </div>
               <HarnessSplit summary={detail} />
             </>
