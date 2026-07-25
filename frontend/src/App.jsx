@@ -6,7 +6,6 @@ import "./App.css";
 
 const NAV_ITEMS = [
   { key: "tokens", icon: "▤", label: "Tokens" },
-  { key: "limits", icon: "◔", label: "Limits", disabled: true },
   { key: "projects", icon: "▣", label: "By Project" },
 ];
 
