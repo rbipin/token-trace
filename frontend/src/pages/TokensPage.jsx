@@ -6,18 +6,18 @@ import SyncLogCard from "../components/SyncLogCard.jsx";
 import Heatmap from "../components/Heatmap.jsx";
 import TrendChart from "../components/TrendChart.jsx";
 import HarnessCards from "../components/HarnessCards.jsx";
-import ContextBreakdown from "../components/ContextBreakdown.jsx";
+import ContextBreakdown, { COLORS as CONTEXT_COLORS } from "../components/ContextBreakdown.jsx";
 import ModelBreakdown from "../components/ModelBreakdown.jsx";
 import { formatTokens } from "../format.js";
 import { formatRelativeTime } from "../relativeTime.js";
-import { harnessColor, useThemeCtx } from "../theme.js";
+import { useThemeCtx } from "../theme.js";
 
 export default function TokensPage() {
   const [summary, setSummary] = useState(null);
   const [range, setRange] = useState("all");
   const [mostRecent, setMostRecent] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
-  const { dark, accent } = useThemeCtx();
+  const { accent } = useThemeCtx();
 
   useEffect(() => {
     getSummary({ period: range }).then(setSummary).catch(() => {});
@@ -28,13 +28,21 @@ export default function TokensPage() {
   }, [refreshKey]);
 
   const tokens = summary ? formatTokens(summary.total_tokens) : null;
-  const progressSegs = summary
-    ? summary.harnesses.map((h) => ({
-        source: h.source,
-        pct: h.pct * 100,
-        color: harnessColor(h.source, dark, dark ? "#8b8d94" : "#78716c", accent),
-      }))
+  const contextCategories = summary
+    ? [
+        { label: "Input", value: summary.input_tokens },
+        { label: "Output", value: summary.output_tokens },
+        { label: "Cache Read", value: summary.cache_read_tokens },
+        { label: "Cache Creation", value: summary.cache_creation_tokens },
+        { label: "Reasoning", value: summary.reasoning_tokens },
+      ]
     : [];
+  const contextTotal = contextCategories.reduce((sum, c) => sum + c.value, 0) || 1;
+  const progressSegs = contextCategories.map((c) => ({
+    label: c.label,
+    color: CONTEXT_COLORS[c.label],
+    pct: (c.value / contextTotal) * 100,
+  }));
 
   return (
     <div>
@@ -58,9 +66,6 @@ export default function TokensPage() {
             <div className="flex items-center justify-between flex-wrap gap-2.5 mb-[22px]">
               <RangeTabs value={range} onChange={setRange} />
               <div className="flex gap-2 shrink-0">
-                <button className="tt-tab flex items-center gap-1.5 px-3.5 py-2 border border-border dark:border-border-dark rounded-[9px] text-xs font-semibold whitespace-nowrap">
-                  ↗ Share
-                </button>
                 <button
                   className="tt-tab px-3 py-2 border border-border dark:border-border-dark rounded-[9px]"
                   onClick={() => setRefreshKey((k) => k + 1)}
@@ -77,10 +82,15 @@ export default function TokensPage() {
               <span className="font-extrabold text-[clamp(38px,5vw,58px)] leading-[1.05] tracking-[-0.02em]">
                 {tokens ? tokens.full : "—"}
               </span>
+              {tokens && (
+                <span className="font-bold text-xl" style={{ color: accent }}>
+                  {tokens.abbreviated}
+                </span>
+              )}
             </div>
             <div className="h-1.5 rounded-full bg-pill dark:bg-pill-dark mt-5 overflow-hidden flex">
               {progressSegs.map((s) => (
-                <div key={s.source} style={{ width: `${s.pct}%`, background: s.color }} />
+                <div key={s.label} style={{ width: `${s.pct}%`, background: s.color }} />
               ))}
             </div>
             <HarnessCards summary={summary} />

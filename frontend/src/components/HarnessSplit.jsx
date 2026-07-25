@@ -1,4 +1,4 @@
-import { harnessColor, useThemeCtx } from "../theme.js";
+import { harnessColor, harnessLabel, useThemeCtx } from "../theme.js";
 
 export default function HarnessSplit({ summary }) {
   const { dark, accent } = useThemeCtx();
@@ -17,7 +17,7 @@ export default function HarnessSplit({ summary }) {
                 className="w-2.5 h-2.5 rounded-sm shrink-0"
                 style={{ background: color }}
               />
-              <span className="flex-1 text-[13px] font-medium">{h.source}</span>
+              <span className="flex-1 text-[13px] font-medium">{harnessLabel(h.source)}</span>
               <div className="w-[110px] h-1 rounded-full bg-pill dark:bg-pill-dark overflow-hidden">
                 <div
                   className="h-full rounded-full"

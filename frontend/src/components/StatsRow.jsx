@@ -32,20 +32,6 @@ export default function StatsRow({ summary }) {
           <Pill key={p.label} {...p} />
         ))}
       </div>
-      <div className="flex flex-col gap-3 mt-[18px]">
-        {summary.models.slice(0, 3).map((m, i) => (
-          <div key={m.model} className="flex items-center gap-3">
-            <span className="font-mono font-semibold text-xs text-subtext dark:text-subtext-dark w-3.5">
-              {i + 1}
-            </span>
-            <span className="flex-1 text-[13.5px] font-medium truncate">{m.model}</span>
-            <span className="font-mono font-semibold text-[13px]">{(m.pct * 100).toFixed(1)}%</span>
-          </div>
-        ))}
-        {summary.models.length === 0 && (
-          <p className="text-subtext dark:text-subtext-dark text-sm">No usage data for this range.</p>
-        )}
-      </div>
       <div className="flex justify-between mt-[18px] pt-3.5 border-t border-border dark:border-border-dark text-[11.5px] font-medium text-subtext dark:text-subtext-dark">
         <span>Started {summary.first_date || "—"}</span>
         <span>Active days {summary.active_days}</span>

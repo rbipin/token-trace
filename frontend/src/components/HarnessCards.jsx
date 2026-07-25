@@ -1,4 +1,4 @@
-import { harnessIcon } from "../theme.js";
+import { harnessIcon, harnessLabel } from "../theme.js";
 
 export default function HarnessCards({ summary }) {
   if (!summary) return null;
@@ -11,7 +11,7 @@ export default function HarnessCards({ summary }) {
         >
           <div className="flex items-center gap-1.5 text-[10.5px] font-semibold tracking-[0.08em] uppercase text-subtext dark:text-subtext-dark">
             <span>{harnessIcon(h.source)}</span>
-            {h.source}
+            {harnessLabel(h.source)}
           </div>
           <span className="font-bold text-[19px]">{(h.pct * 100).toFixed(1)}%</span>
           <span className="text-[11px] text-subtext dark:text-subtext-dark">

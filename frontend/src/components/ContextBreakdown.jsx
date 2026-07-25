@@ -1,6 +1,6 @@
 import { formatTokens } from "../format.js";
 
-const COLORS = {
+export const COLORS = {
   Input: "#22c55e",
   Output: "#5b8def",
   "Cache Read": "#a78bfa",

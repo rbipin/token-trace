@@ -22,24 +22,23 @@ export function rgba(hex, a) {
 }
 
 // Harness icon + brand accent, matched per-theme (dark/light variant of each hue).
+// Keyed by the raw `source` string collectors write to SessionRecord (see collectors/*.py).
 const HARNESS_TABLE = {
-  Claude: { icon: "✳", color: (dark) => (dark ? "#22c55e" : "#22c55e") },
-  Codex: { icon: "◐", color: (dark) => (dark ? "#3b82f6" : "#2563eb") },
-  Cursor: { icon: "◈", color: (dark) => (dark ? "#a78bfa" : "#7c3aed") },
-  OpenCode: { icon: "◻", color: (dark, subtext) => subtext },
-  Antigravity: { icon: "▲", color: (dark, subtext) => subtext },
-  "Kilo-CLI": { icon: "◆", color: (dark, subtext) => subtext },
-  CodeBuddy: { icon: "◎", color: (dark, subtext) => subtext },
-  Copilot: { icon: "⌘", color: (dark) => (dark ? "#f472b6" : "#db2777") },
+  claude_cli: { label: "Claude", icon: "✳", color: (dark) => (dark ? "#22c55e" : "#22c55e") },
+  copilot_cli: { label: "Copilot", icon: "⌘", color: (dark) => (dark ? "#f472b6" : "#db2777") },
 };
 
-export function harnessIcon(name) {
-  return HARNESS_TABLE[name]?.icon ?? "•";
+export function harnessLabel(source) {
+  return HARNESS_TABLE[source]?.label ?? source;
 }
 
-export function harnessColor(name, dark, subtext, accent) {
-  const entry = HARNESS_TABLE[name];
+export function harnessIcon(source) {
+  return HARNESS_TABLE[source]?.icon ?? "•";
+}
+
+export function harnessColor(source, dark, subtext, accent) {
+  const entry = HARNESS_TABLE[source];
   if (!entry) return subtext;
-  if (name === "Claude") return accent;
+  if (source === "claude_cli") return accent;
   return entry.color(dark, subtext);
 }
