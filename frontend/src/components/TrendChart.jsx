@@ -1,10 +1,39 @@
 import { useEffect, useState } from "react";
 import { getTrend } from "../api.js";
+import { harnessColor, useThemeCtx } from "../theme.js";
 
-const COLORS = ["#5b8def", "#f2994a", "#9b59b6", "#27ae60", "#e74c3c", "#f1c40f"];
+const W = 400;
+const H = 150;
+const PAD_B = 4;
+
+// Catmull-Rom-ish smoothing through a series of [x, y] points, clamped so
+// control points never overshoot past their neighbors' y-range.
+function smooth(pts) {
+  if (pts.length < 3) {
+    return pts.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + "," + p[1].toFixed(1)).join(" ");
+  }
+  let d = `M${pts[0][0].toFixed(1)},${pts[0][1].toFixed(1)} `;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[i - 1] || pts[i];
+    const p1 = pts[i];
+    const p2 = pts[i + 1];
+    const p3 = pts[i + 2] || p2;
+    let c1x = p1[0] + (p2[0] - p0[0]) / 9;
+    let c1y = p1[1] + (p2[1] - p0[1]) / 9;
+    let c2x = p2[0] - (p3[0] - p1[0]) / 9;
+    let c2y = p2[1] - (p3[1] - p1[1]) / 9;
+    const lo = Math.min(p1[1], p2[1]);
+    const hi = Math.max(p1[1], p2[1]);
+    c1y = Math.max(lo, Math.min(hi, c1y));
+    c2y = Math.max(lo, Math.min(hi, c2y));
+    d += `C${c1x.toFixed(1)},${c1y.toFixed(1)} ${c2x.toFixed(1)},${c2y.toFixed(1)} ${p2[0].toFixed(1)},${p2[1].toFixed(1)} `;
+  }
+  return d.trim();
+}
 
 export default function TrendChart({ refreshKey = 0 }) {
   const [rows, setRows] = useState([]);
+  const { dark, accent } = useThemeCtx();
 
   useEffect(() => {
     getTrend(30).then(setRows).catch(() => setRows([]));
@@ -13,74 +42,62 @@ export default function TrendChart({ refreshKey = 0 }) {
   const dates = [...new Set(rows.map((r) => r.date))].sort();
   const sources = [...new Set(rows.map((r) => r.source))];
   const byDate = Object.fromEntries(dates.map((d) => [d, {}]));
-  rows.forEach((r) => { byDate[r.date][r.source] = r.tokens; });
-  const dayTotals = dates.map((d) => sources.reduce((sum, s) => sum + (byDate[d][s] || 0), 0));
-  const maxTotal = Math.max(1, ...dayTotals);
-
-  const sourceTotals = Object.fromEntries(sources.map((s) => [s, 0]));
-  rows.forEach((r) => { sourceTotals[r.source] += r.tokens; });
-  const grandTotal = Object.values(sourceTotals).reduce((a, b) => a + b, 0) || 1;
-
-  const barWidth = 8;
-  const gap = 4;
-  const chartHeight = 120;
-  const step = barWidth + gap;
-  const chartWidth = dates.length * step;
-  const xs = dates.map((_, i) => i * step + barWidth / 2);
-
-  // Per date, the cumulative stacked top edge (y-coordinate) for each source,
-  // in the same stacking order as `sources`.
-  const stackTops = dates.map((date) => {
-    let cum = 0;
-    return sources.map((source) => {
-      cum += byDate[date][source] || 0;
-      return chartHeight - (cum / maxTotal) * chartHeight;
-    });
+  rows.forEach((r) => {
+    byDate[r.date][r.source] = r.tokens;
   });
 
+  const sourceTotals = Object.fromEntries(sources.map((s) => [s, 0]));
+  rows.forEach((r) => {
+    sourceTotals[r.source] += r.tokens;
+  });
+  const grandTotal = Object.values(sourceTotals).reduce((a, b) => a + b, 0) || 1;
+  const legend = sources
+    .map((s) => ({
+      label: s,
+      color: harnessColor(s, dark, dark ? "#8b8d94" : "#78716c", accent),
+      pct: (sourceTotals[s] / grandTotal) * 100,
+    }))
+    .sort((a, b) => b.pct - a.pct);
+
+  const n = dates.length;
+  const dayTotals = dates.map((d) => sources.reduce((sum, s) => sum + (byDate[d][s] || 0), 0));
+  const tMax = Math.max(...dayTotals, 1) * 1.08;
+  const X = (i) => (n > 1 ? (i / (n - 1)) * W : W / 2);
+  const Y = (v) => H - PAD_B - (v / tMax) * (H - PAD_B);
+
+  const topPts = dayTotals.map((v, i) => [X(i), Y(v)]);
+  const basePts = dayTotals.map((_, i) => [X(i), Y(0)]);
+  const areaPath =
+    n > 0
+      ? smooth(topPts) +
+        ` L${basePts[basePts.length - 1][0].toFixed(1)},${basePts[basePts.length - 1][1].toFixed(1)} ` +
+        smooth(basePts.slice().reverse()) +
+        " Z"
+      : "";
+  const linePath = n > 0 ? smooth(topPts) : "";
+
   return (
-    <div className="bg-card dark:bg-card-dark border border-border dark:border-border-dark rounded-xl p-4 mb-4">
-      <h4 className="text-xs uppercase tracking-wide opacity-60 mb-2">Usage trend (last 30 days)</h4>
-      <svg
-        width={chartWidth}
-        height={chartHeight}
-        role="group"
-        aria-label="Usage trend, last 30 days, stacked by source"
-      >
-        {sources.map((source, si) => {
-          const topLine = xs.map((x, i) => `L ${x},${stackTops[i][si]}`).join(" ");
-          const bottomLine = xs
-            .slice()
-            .reverse()
-            .map((x, revIdx) => {
-              const i = xs.length - 1 - revIdx;
-              const y = si > 0 ? stackTops[i][si - 1] : chartHeight;
-              return `L ${x},${y}`;
-            })
-            .join(" ");
-          const d = `M ${xs[0]},${stackTops[0][si]} ${topLine} ${bottomLine} Z`;
-          const label = `${source}: ${(sourceTotals[source] || 0).toLocaleString()} tokens`;
-          return (
-            <path
-              key={source}
-              d={d}
-              fill={COLORS[si % COLORS.length]}
-              role="img"
-              aria-label={label}
-              tabIndex={0}
-            >
-              <title>{label}</title>
-            </path>
-          );
-        })}
+    <div className="border border-border dark:border-border-dark rounded-[14px] p-5 bg-card dark:bg-card-dark">
+      <span className="font-bold text-xs tracking-[0.08em] uppercase">Usage trend</span>
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full block mt-3.5">
+        {areaPath && <path d={areaPath} fill={accent} fillOpacity={0.45} />}
+        {linePath && <path d={linePath} fill="none" stroke={accent} strokeWidth={1.75} />}
       </svg>
-      <div className="flex flex-wrap gap-4 mt-2 text-xs">
-        {sources.map((s, i) => (
-          <span key={s} className="flex items-center gap-1">
-            <i className="w-2.5 h-2.5 rounded-sm inline-block" style={{ background: COLORS[i % COLORS.length] }} />
-            {s}: {((sourceTotals[s] / grandTotal) * 100).toFixed(1)}%
+      <div className="flex justify-between mt-2 font-mono text-[11px] text-subtext dark:text-subtext-dark">
+        <span>{dates[0] || "—"}</span>
+        <span>{dates[dates.length - 1] || "—"}</span>
+      </div>
+      <div className="flex gap-4 flex-wrap mt-2.5">
+        {legend.map((l) => (
+          <span
+            key={l.label}
+            className="flex items-center gap-1.5 text-[11px] font-medium text-subtext dark:text-subtext-dark"
+          >
+            <span className="w-[9px] h-[9px] rounded-sm" style={{ background: l.color }} />
+            {l.label} {l.pct.toFixed(1)}%
           </span>
         ))}
+        {legend.length === 0 && <span className="text-[11px] text-subtext dark:text-subtext-dark">No data.</span>}
       </div>
     </div>
   );

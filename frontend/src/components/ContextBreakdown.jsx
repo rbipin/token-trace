@@ -1,3 +1,5 @@
+import { formatTokens } from "../format.js";
+
 const COLORS = {
   Input: "#22c55e",
   Output: "#5b8def",
@@ -16,24 +18,31 @@ export default function ContextBreakdown({ summary }) {
     { label: "Reasoning", value: summary.reasoning_tokens },
   ];
   const total = categories.reduce((sum, c) => sum + c.value, 0) || 1;
+  const maxVal = Math.max(...categories.map((c) => c.value), 1);
 
   return (
-    <div className="mb-4">
-      <h4 className="text-xs uppercase tracking-wide opacity-60 mb-2">Context breakdown</h4>
-      <div className="flex h-2 rounded-full overflow-hidden mb-2">
+    <div className="border border-border dark:border-border-dark rounded-[14px] px-[26px] pt-[22px] pb-[26px] bg-card dark:bg-card-dark">
+      <div className="font-bold text-[15px] mb-3.5">✳ Context breakdown</div>
+      <div className="flex flex-col gap-2.5">
         {categories.map((c) => (
-          <div
-            key={c.label}
-            style={{ width: `${(c.value / total) * 100}%`, background: COLORS[c.label] }}
-          />
-        ))}
-      </div>
-      <div className="flex flex-wrap gap-3 text-xs">
-        {categories.map((c) => (
-          <span key={c.label} className="flex items-center gap-1">
-            <i className="w-2.5 h-2.5 rounded-sm inline-block" style={{ background: COLORS[c.label] }} />
-            {c.label}: {((c.value / total) * 100).toFixed(1)}% ({c.value.toLocaleString()})
-          </span>
+          <div key={c.label} className="flex flex-col gap-1.5">
+            <div className="flex items-center gap-2.5">
+              <span className="w-2 h-2 rounded-sm shrink-0" style={{ background: COLORS[c.label] }} />
+              <span className="flex-1 text-[13.5px] font-medium">{c.label}</span>
+              <span className="font-mono font-semibold text-[12.5px]">
+                {formatTokens(c.value).abbreviated}
+              </span>
+              <span className="text-[11.5px] font-medium text-subtext dark:text-subtext-dark w-11 text-right">
+                {((c.value / total) * 100).toFixed(1)}%
+              </span>
+            </div>
+            <div className="h-1 rounded-full bg-pill dark:bg-pill-dark">
+              <div
+                className="h-full rounded-full"
+                style={{ width: `${Math.max(2, (c.value / maxVal) * 100)}%`, background: COLORS[c.label] }}
+              />
+            </div>
+          </div>
         ))}
       </div>
     </div>

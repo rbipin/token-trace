@@ -5,11 +5,13 @@ import ProjectList from "../components/ProjectList.jsx";
 import HarnessSplit from "../components/HarnessSplit.jsx";
 import ContextBreakdown from "../components/ContextBreakdown.jsx";
 import { formatTokens } from "../format.js";
+import { useThemeCtx } from "../theme.js";
 
 export default function ProjectsPage() {
   const [projects, setProjects] = useState([]);
   const [selected, setSelected] = useState(null);
   const [detail, setDetail] = useState(null);
+  const { accent } = useThemeCtx();
 
   useEffect(() => {
     getProjects({ period: "all" }).then((data) => {
@@ -24,21 +26,32 @@ export default function ProjectsPage() {
   }, [selected]);
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-4">
+    <div className="grid gap-5 items-start" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))" }}>
       <ProjectList projects={projects} selected={selected} onSelect={setSelected} />
-      <div className="bg-card dark:bg-card-dark border border-border dark:border-border-dark rounded-xl p-6">
-        {selected ? (
-          <>
-            <h2 className="text-2xl font-semibold mb-1">{selected}</h2>
-            <p className="text-3xl font-semibold mb-4">
-              {detail ? formatTokens(detail.total_tokens).full : "—"}
-            </p>
-            <HarnessSplit summary={detail} />
-            <ContextBreakdown summary={detail} />
-          </>
-        ) : (
-          <p className="opacity-60">Select a project.</p>
-        )}
+
+      <div className="flex flex-col gap-5">
+        <div className="border border-border dark:border-border-dark rounded-[14px] px-[26px] pt-[22px] pb-[26px] bg-card dark:bg-card-dark">
+          {selected ? (
+            <>
+              <div className="text-[11px] font-semibold tracking-[0.14em] uppercase text-subtext dark:text-subtext-dark">
+                Selected project
+              </div>
+              <div className="font-extrabold text-2xl font-mono mt-1.5">{selected}</div>
+              <div className="flex items-baseline gap-3.5 mt-2.5">
+                <span className="font-extrabold text-[clamp(30px,4vw,42px)] leading-[1.05] tracking-[-0.02em]">
+                  {detail ? formatTokens(detail.total_tokens).full : "—"}
+                </span>
+                <span className="font-semibold text-base" style={{ color: accent }}>
+                  tokens
+                </span>
+              </div>
+              <HarnessSplit summary={detail} />
+            </>
+          ) : (
+            <p className="text-subtext dark:text-subtext-dark">Select a project.</p>
+          )}
+        </div>
+        {selected && <ContextBreakdown summary={detail} />}
       </div>
     </div>
   );
