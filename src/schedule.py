@@ -109,3 +109,32 @@ def unschedule_macos() -> bool:
     subprocess.run(["launchctl", "unload", str(_PLIST_PATH)], capture_output=True)
     _PLIST_PATH.unlink()
     return True
+
+
+def schedule_windows(hour: int, minute: int) -> None:
+    """Register (or silently replace, via /F) the daily scheduled task on Windows."""
+    prog_args = resolve_executable() + ["collect", "--lookback", "1"]
+    exe, *rest = prog_args
+    command = " ".join([f'"{exe}"', *rest])
+    subprocess.run(
+        [
+            "schtasks", "/Create", "/F",
+            "/SC", "DAILY",
+            "/TN", TASK_NAME,
+            "/TR", command,
+            "/ST", f"{hour:02d}:{minute:02d}",
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+
+def unschedule_windows() -> bool:
+    """Remove the daily scheduled task on Windows. Returns False if none was registered."""
+    query = subprocess.run(
+        ["schtasks", "/Query", "/TN", TASK_NAME], capture_output=True
+    )
+    if query.returncode != 0:
+        return False
+    subprocess.run(["schtasks", "/Delete", "/F", "/TN", TASK_NAME], check=True, capture_output=True)
+    return True
