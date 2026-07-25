@@ -279,6 +279,10 @@ python3 tracker.py report --summary --period all --by-project --json
 # List local project identities (cwd -> guid -> whimsical name; never synced)
 python3 tracker.py projects
 
+# Schedule the daily collector natively (macOS launchd / Windows Task Scheduler)
+python3 tracker.py schedule 23:50    # registers/replaces a daily "collect --lookback 1" job
+python3 tracker.py unschedule        # removes it
+
 # Sync unsynced records to configured remote stores (e.g., Supabase)
 python3 tracker.py sync
 python3 tracker.py sync --dry-run   # show pending counts without pushing
@@ -507,41 +511,32 @@ Alternatively, skip packaging and point directly at a class with
 ## Run It Periodically
 
 `collect` is designed to be run on a schedule (it's idempotent, so re-runs
-just overwrite the same session rows). Helper scripts in the repo register a
-daily job that runs `collect --lookback 1` at 23:50 — they auto-detect
-whether `tokentracer` is on PATH (packaged install) or fall back to running
-`tracker.py` from a repo checkout, so the same script works either way. Safe
-to re-run: it fully replaces any existing job with the same name.
-
-**macOS (launchd):**
+just overwrite the same session rows). `tokentracer schedule <HH:MM>`
+registers a daily job that runs `collect --lookback 1` at the given time,
+using the OS-native scheduler — `launchd` on macOS, Task Scheduler on
+Windows. It auto-detects whether `tokentracer` is on PATH (packaged install)
+or falls back to running `tracker.py` from a repo checkout. Safe to re-run:
+it silently replaces any existing job.
 
 ```bash
-./register-task.sh
+tokentracer schedule 23:50    # registers/replaces the daily job
+tokentracer unschedule        # removes it
 ```
 
-Registers `com.ai-token-tracer` as a `launchd` agent. Output goes to
-`~/.tokentracer/tracker.log` (or `<repo>/tracker.log` for a repo checkout).
+**macOS (launchd):** registers `com.ai-token-tracer` as a `launchd` agent.
+Output goes to `~/.tokentracer/tracker.log` (or `<repo>/tracker.log` for a
+repo checkout).
 
 ```bash
 launchctl start com.ai-token-tracer   # run once now
 launchctl list com.ai-token-tracer    # check status
-launchctl unload ~/Library/LaunchAgents/com.ai-token-tracer.plist \
-  && rm ~/Library/LaunchAgents/com.ai-token-tracer.plist           # remove
 ```
 
-**Windows (Task Scheduler):**
-
-```powershell
-.\register-task.ps1
-```
-
-Registers the `ai-token-tracer` scheduled task, wrapping the command in a
-`run-collect.cmd` so stdout/stderr land in `tracker.log`.
+**Windows (Task Scheduler):** registers the `ai-token-tracer` scheduled task.
 
 ```powershell
 Start-ScheduledTask -TaskName "ai-token-tracer"                       # run once now
 (Get-ScheduledTaskInfo -TaskName "ai-token-tracer").LastTaskResult    # check status
-Unregister-ScheduledTask -TaskName "ai-token-tracer" -Confirm:$false  # remove
 ```
 
 This is a separate job from the [dashboard daemon](#dashboard) — the two are
