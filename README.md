@@ -319,9 +319,17 @@ Then:
 ```bash
 tokentracer dashboard              # foreground, http://127.0.0.1:8420, Ctrl-C to stop
 tokentracer dashboard --port 9000  # custom port
-tokentracer dashboard --daemon     # install as a persistent background service (survives reboot/logout)
+tokentracer dashboard --daemon     # install as a persistent background service
 tokentracer dashboard --stop       # remove the persistent service
 ```
+
+`--daemon` installs a background service that starts the dashboard on login
+and restarts it if it's killed (macOS: a `launchd` agent with `RunAtLoad` +
+`KeepAlive` at `~/Library/LaunchAgents/com.ai-token-tracer.dashboard.plist`;
+Windows: a Scheduled Task that runs `ONLOGON`). It's a separate job from the
+collector's own schedule (below), so you can run one, the other, or both —
+logs go to `~/.tokentracer/dashboard.log`. `--stop` unloads/removes the
+service; re-running `--daemon` (e.g. with a different `--port`) replaces it.
 
 ---
 
@@ -498,26 +506,46 @@ Alternatively, skip packaging and point directly at a class with
 
 ## Run It Periodically
 
+`collect` is designed to be run on a schedule (it's idempotent, so re-runs
+just overwrite the same session rows). Helper scripts in the repo register a
+daily job that runs `collect --lookback 1` at 23:50 — they auto-detect
+whether `tokentracer` is on PATH (packaged install) or fall back to running
+`tracker.py` from a repo checkout, so the same script works either way. Safe
+to re-run: it fully replaces any existing job with the same name.
+
+**macOS (launchd):**
+
+```bash
+./register-task.sh
+```
+
+Registers `com.ai-token-tracer` as a `launchd` agent. Output goes to
+`~/.tokentracer/tracker.log` (or `<repo>/tracker.log` for a repo checkout).
+
+```bash
+launchctl start com.ai-token-tracer   # run once now
+launchctl list com.ai-token-tracer    # check status
+launchctl unload ~/Library/LaunchAgents/com.ai-token-tracer.plist \
+  && rm ~/Library/LaunchAgents/com.ai-token-tracer.plist           # remove
+```
+
 **Windows (Task Scheduler):**
 
 ```powershell
-$python = (Get-Command python).Source
-$script = "C:\path\to\ai-token\tracker.py"
-
-$action  = New-ScheduledTaskAction -Execute $python -Argument "`"$script`" collect"
-$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) `
-             -RepetitionInterval (New-TimeSpan -Hours 1)
-$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable `
-             -DontStopIfGoingOnBatteries -AllowStartIfOnBatteries
-
-Register-ScheduledTask -TaskName "ai-token-tracer" `
-  -Action $action -Trigger $trigger -Settings $settings
+.\register-task.ps1
 ```
 
-To remove it: `Unregister-ScheduledTask -TaskName "ai-token-tracer"`.
+Registers the `ai-token-tracer` scheduled task, wrapping the command in a
+`run-collect.cmd` so stdout/stderr land in `tracker.log`.
 
-**macOS (launchd):** create a plist in `~/Library/LaunchAgents/` that runs
-`python3 /path/to/tracker.py collect` on an hourly interval.
+```powershell
+Start-ScheduledTask -TaskName "ai-token-tracer"                       # run once now
+(Get-ScheduledTaskInfo -TaskName "ai-token-tracer").LastTaskResult    # check status
+Unregister-ScheduledTask -TaskName "ai-token-tracer" -Confirm:$false  # remove
+```
+
+This is a separate job from the [dashboard daemon](#dashboard) — the two are
+installed and removed independently.
 
 ---
 
