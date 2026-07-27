@@ -314,7 +314,10 @@ your total token budget came from the cache, and the approximate cost saving
 
 A local web dashboard visualizes `usage.db` without the CLI `report` commands.
 
-One-time frontend build:
+If you installed via `pip`/`pipx`/`uv tool install`, the frontend is already
+built into the package — just run `tokentracer dashboard`. Only a source
+checkout needs a one-time frontend build (output goes to `src/dashboard/static`,
+which the `dashboard` command reads from):
 ```bash
 cd frontend && pnpm install && pnpm run build
 ```

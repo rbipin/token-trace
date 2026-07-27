@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tokentracer"
-version = "1.0.1"
+version = "1.0.2"
 description = "Local token usage tracker for AI CLI tools (Claude Code, GitHub Copilot)"
 readme = "README.md"
 license = "LicenseRef-PolyForm-Shield-1.0.0"
@@ -30,3 +30,4 @@ include = ["src*"]
 
 [tool.setuptools.package-data]
 src = ["model_aliases.toml"]
+"src.dashboard" = ["static/**/*"]

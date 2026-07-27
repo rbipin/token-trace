@@ -9,7 +9,7 @@ from src.dashboard import daemon
 from src.dashboard.server import make_server
 
 _DEFAULT_PORT = 8420
-_FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+_FRONTEND_DIST = Path(__file__).resolve().parents[1] / "dashboard" / "static"
 
 
 class DashboardCommand:
@@ -50,7 +50,7 @@ class DashboardCommand:
 
         if not _FRONTEND_DIST.exists():
             print(f"Error: frontend build not found at {_FRONTEND_DIST}. "
-                  f"Run: cd frontend && npm install && npm run build")
+                  f"Run: cd frontend && pnpm install && pnpm run build")
             return 1
 
         cfg = Config.load()
