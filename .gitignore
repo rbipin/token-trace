@@ -29,9 +29,8 @@ build/
 dist/
 *.egg-info/
 
-# Frontend build (generated via `cd frontend && pnpm install && pnpm run build`)
+# Frontend (src/dashboard/static/ is CI-generated and committed — do not build by hand)
 frontend/node_modules/
-src/dashboard/static/
 
 # Editor / OS cruft
 .idea/
