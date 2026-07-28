@@ -314,13 +314,12 @@ your total token budget came from the cache, and the approximate cost saving
 
 A local web dashboard visualizes `usage.db` without the CLI `report` commands.
 
-If you installed via `pip`/`pipx`/`uv tool install`, the frontend is already
-built into the package — just run `tokentracer dashboard`. Only a source
-checkout needs a one-time frontend build (output goes to `src/dashboard/static`,
-which the `dashboard` command reads from):
-```bash
-cd frontend && pnpm install && pnpm run build
-```
+The pre-built frontend is committed to the repo by CI (`src/dashboard/static/`,
+regenerated automatically on every push to `main` that touches `frontend/`),
+so every install method — including `uv tool install git+...` and a plain
+source checkout — includes the dashboard out of the box. When contributing,
+never build or commit `src/dashboard/static/` by hand; CI overwrites it.
+For local frontend development only: `cd frontend && pnpm install && pnpm run build`.
 
 Then:
 ```bash
@@ -331,12 +330,14 @@ tokentracer dashboard --stop       # remove the persistent service
 ```
 
 `--daemon` installs a background service that starts the dashboard on login
-and restarts it if it's killed (macOS: a `launchd` agent with `RunAtLoad` +
-`KeepAlive` at `~/Library/LaunchAgents/com.ai-token-tracer.dashboard.plist`;
-Windows: a Scheduled Task that runs `ONLOGON`). It's a separate job from the
+and restarts it if it's killed. On Windows, the Scheduled Task is started immediately
+after creation (not only at next logon), and re-running `--daemon` reports
+`Dashboard daemon already running ...` if the service is already active. On macOS,
+it's a `launchd` agent with `RunAtLoad` + `KeepAlive` at `~/Library/LaunchAgents/com.ai-token-tracer.dashboard.plist`;
+on Windows, it's a Scheduled Task that runs `ONLOGON`. It's a separate job from the
 collector's own schedule (below), so you can run one, the other, or both —
-logs go to `~/.tokentracer/dashboard.log`. `--stop` unloads/removes the
-service; re-running `--daemon` (e.g. with a different `--port`) replaces it.
+logs go to `~/.tokentracer/dashboard.log`. `--stop` ends a running task before
+deleting the service; re-running `--daemon` (e.g. with a different `--port`) replaces it.
 
 ---
 

@@ -55,7 +55,7 @@ python3 tracker.py unschedule        # removes it
 python3 tracker.py sync
 python3 tracker.py sync --dry-run   # show pending counts without pushing
 
-# Run the local dashboard (source checkout: build the frontend once first, see README)
+# Run the local dashboard (frontend is pre-built and committed by CI; see README)
 python3 tracker.py dashboard
 python3 tracker.py dashboard --daemon
 python3 tracker.py dashboard --stop
