@@ -337,7 +337,8 @@ it's a `launchd` agent with `RunAtLoad` + `KeepAlive` at `~/Library/LaunchAgents
 on Windows, it's a Scheduled Task that runs `ONLOGON`. It's a separate job from the
 collector's own schedule (below), so you can run one, the other, or both —
 logs go to `~/.tokentracer/dashboard.log`. `--stop` ends a running task before
-deleting the service; re-running `--daemon` (e.g. with a different `--port`) replaces it.
+deleting the service. On macOS, re-running `--daemon` (e.g. with a different `--port`)
+replaces it; on Windows, stop the daemon first with `--stop`, then re-run `--daemon`.
 
 ---
 
