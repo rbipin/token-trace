@@ -44,3 +44,26 @@ body {
   cursor: pointer;
   background: transparent;
 }
+
+.tt-select {
+  cursor: pointer;
+  color-scheme: light;
+  background: var(--color-card);
+  color: var(--color-fg);
+}
+
+[data-theme="dark"] .tt-select {
+  color-scheme: dark;
+  background: var(--color-card-dark);
+  color: var(--color-fg-dark);
+}
+
+.tt-select option {
+  background: var(--color-card);
+  color: var(--color-fg);
+}
+
+[data-theme="dark"] .tt-select option {
+  background: var(--color-card-dark);
+  color: var(--color-fg-dark);
+}

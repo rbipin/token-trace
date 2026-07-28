@@ -12,7 +12,7 @@ export default function ProjectList({ projects, selected, onSelect }) {
 
       {projects.length > 0 && (
         <select
-          className="tt-tab w-full mb-4 px-2.5 py-2 border border-border dark:border-border-dark rounded-[9px] text-[13px] font-medium bg-transparent"
+          className="tt-select w-full mb-4 px-2.5 py-2 border border-border dark:border-border-dark rounded-[9px] text-[13px] font-medium"
           value={selected ?? ""}
           onChange={(e) => onSelect(e.target.value)}
           aria-label="Jump to project"

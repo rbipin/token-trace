@@ -31,6 +31,47 @@ def _last_n_days_filter(days: int) -> tuple[str, list]:
     return "date >= date('now', ?, 'localtime')", [f"-{days - 1} days"]
 
 
+def _project_display_map(conn: sqlite3.Connection) -> dict[str, str]:
+    """Map stored project values (guid or whimsical name) to real project keys.
+
+    The dashboard is local-only and project_identities never leaves this
+    machine, so unmasking for display does not weaken the guid/whimsical
+    privacy modes applied to stored and synced session rows.
+    """
+    try:
+        rows = conn.execute(
+            "SELECT cwd_key, guid, whimsical_name FROM project_identities"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return {}
+    mapping: dict[str, str] = {}
+    for r in rows:
+        if r["guid"]:
+            mapping[r["guid"]] = r["cwd_key"]
+        if r["whimsical_name"]:
+            mapping[r["whimsical_name"]] = r["cwd_key"]
+    return mapping
+
+
+def _stored_project_aliases(conn: sqlite3.Connection, project: str) -> list[str]:
+    """Return every stored sessions.project value for a display name.
+
+    Includes the name itself (mode "yes" stores real names) plus the guid and
+    whimsical alias when the name is a known real project key.
+    """
+    aliases = [project]
+    try:
+        row = conn.execute(
+            "SELECT guid, whimsical_name FROM project_identities WHERE cwd_key = ?",
+            (project,),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        row = None
+    if row:
+        aliases.extend(v for v in (row["guid"], row["whimsical_name"]) if v)
+    return aliases
+
+
 def _rolling_stats(conn: sqlite3.Connection, extra: str, params: list) -> dict:
     def window(where: str, wparams: list) -> tuple[int, int]:
         row = conn.execute(f"""
@@ -59,14 +100,15 @@ def summary(
     period: str,
     start: str | None = None,
     end: str | None = None,
-    project: str | None = None,
+    project: str | list[str] | None = None,
     source: str | None = None,
 ) -> dict:
     where, params = date_filter(period, start, end)
     extra = ""
     if project:
-        extra += " AND project = ?"
-        params.append(project)
+        names = [project] if isinstance(project, str) else list(project)
+        extra += f" AND project IN ({','.join('?' * len(names))})"
+        params.extend(names)
     if source:
         extra += " AND source = ?"
         params.append(source)
@@ -164,7 +206,12 @@ def trend(conn: sqlite3.Connection, days: int = 30) -> list[dict]:
 def projects(
     conn: sqlite3.Connection, period: str, start: str | None = None, end: str | None = None,
 ) -> list[dict]:
-    """Return list of projects and their token totals, sorted by tokens descending."""
+    """Return list of projects and their token totals, sorted by tokens descending.
+
+    Stored guid/whimsical project values are translated back to real project
+    keys via the local project_identities table; rows for the same project
+    collected under different naming modes are merged.
+    """
     where, params = date_filter(period, start, end)
     rows = conn.execute(f"""
         SELECT project, SUM({_TOKENS_EXPR}) AS tokens
@@ -173,15 +220,26 @@ def projects(
         GROUP BY project
         ORDER BY tokens DESC
     """, params).fetchall()
-    return [{"project": r["project"], "tokens": r["tokens"]} for r in rows]
+    display_map = _project_display_map(conn)
+    totals: dict[str, int] = {}
+    for r in rows:
+        name = display_map.get(r["project"], r["project"])
+        totals[name] = totals.get(name, 0) + r["tokens"]
+    return [
+        {"project": name, "tokens": tokens}
+        for name, tokens in sorted(totals.items(), key=lambda kv: kv[1], reverse=True)
+    ]
 
 
 def project_detail(
     conn: sqlite3.Connection, project: str, period: str,
     start: str | None = None, end: str | None = None,
 ) -> dict:
-    """Return summary for a single project."""
-    return summary(conn, period, start=start, end=end, project=project)
+    """Return summary for a single project (accepts a real or stored name)."""
+    return summary(
+        conn, period, start=start, end=end,
+        project=_stored_project_aliases(conn, project),
+    )
 
 
 def sync_status(conn: sqlite3.Connection) -> dict:
