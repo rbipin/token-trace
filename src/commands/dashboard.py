@@ -40,17 +40,22 @@ class DashboardCommand:
 
         if args.daemon:
             try:
-                daemon.install(args.port)
+                started = daemon.install(args.port)
             except RuntimeError as exc:
                 print(f"Error: {exc}")
                 return 1
-            print(f"Dashboard daemon installed — will run at "
-                  f"http://127.0.0.1:{args.port} on login.")
+            if started:
+                print(f"Dashboard daemon installed — running at "
+                      f"http://127.0.0.1:{args.port}.")
+            else:
+                print(f"Dashboard daemon already running at "
+                      f"http://127.0.0.1:{args.port}.")
             return 0
 
         if not _FRONTEND_DIST.exists():
             print(f"Error: frontend build not found at {_FRONTEND_DIST}. "
-                  f"Run: cd frontend && pnpm install && pnpm run build")
+                  f"The built dashboard is committed by CI — pull the latest main, "
+                  f"or build it yourself: cd frontend && pnpm install && pnpm run build")
             return 1
 
         cfg = Config.load()

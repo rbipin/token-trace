@@ -2,7 +2,7 @@
 
 Installs/removes a persistent background service that keeps
 `tokentracer dashboard` running: a macOS launchd agent or a Windows
-Scheduled Task. This is a separate job identity from the collector's
+Scheduled Task (started immediately after creation). This is a separate job identity from the collector's
 own schedule/unschedule feature (which runs `collect --lookback 1`
 once daily) — it uses its own distinct job/task name so the two can
 be toggled independently.
@@ -27,14 +27,18 @@ def resolve_executable() -> list[str]:
     return [sys.executable, str(repo_tracker)]
 
 
-def install(port: int) -> None:
+def install(port: int) -> bool:
+    """Install and start the dashboard daemon.
+
+    Returns True if installed/started, False if it was already running.
+    """
     system = platform.system()
     if system == "Darwin":
         _install_macos(port)
-    elif system == "Windows":
-        _install_windows(port)
-    else:
-        raise RuntimeError(f"unsupported OS for dashboard daemon: {system}")
+        return True
+    if system == "Windows":
+        return _install_windows(port)
+    raise RuntimeError(f"unsupported OS for dashboard daemon: {system}")
 
 
 def uninstall() -> None:
@@ -86,7 +90,23 @@ def _uninstall_macos() -> None:
     path.unlink()
 
 
-def _install_windows(port: int) -> None:
+def _query_windows_status() -> str | None:
+    """Return the task's Status field ('Running', 'Ready', ...), or None if absent."""
+    result = subprocess.run(
+        ["schtasks", "/Query", "/TN", _TASK_NAME, "/FO", "LIST"],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        return None
+    for line in result.stdout.splitlines():
+        if line.strip().startswith("Status:"):
+            return line.split(":", 1)[1].strip()
+    return ""
+
+
+def _install_windows(port: int) -> bool:
+    if _query_windows_status() == "Running":
+        return False
     argv = resolve_executable() + ["dashboard", "--port", str(port)]
     action = " ".join(f'"{a}"' if " " in a else a for a in argv)
     result = subprocess.run(
@@ -96,9 +116,20 @@ def _install_windows(port: int) -> None:
     )
     if result.returncode != 0:
         raise RuntimeError(f"schtasks /Create failed: {result.stderr.strip()}")
+    result = subprocess.run(
+        ["schtasks", "/Run", "/TN", _TASK_NAME],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"schtasks /Run failed: {result.stderr.strip()}")
+    return True
 
 
 def _uninstall_windows() -> None:
+    subprocess.run(  # stop a running dashboard first; ignore failures (may not be running)
+        ["schtasks", "/End", "/TN", _TASK_NAME],
+        capture_output=True, text=True,
+    )
     result = subprocess.run(
         ["schtasks", "/Delete", "/F", "/TN", _TASK_NAME],
         capture_output=True, text=True,
