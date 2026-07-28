@@ -1,8 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { getHeatmap } from "../api.js";
 import { rgba, useThemeCtx } from "../theme.js";
 
-const DAYS_BACK = 180;
 const MONTH_NAMES = [
   "Jan", "Feb", "Mar", "Apr", "May", "Jun",
   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
@@ -17,34 +16,33 @@ function toISODate(d) {
   return `${y}-${m}-${day}`;
 }
 
-// Builds a Sun->Sat, week-per-column calendar covering the last DAYS_BACK
-// days, gap-filling any date missing from the API response with 0 tokens,
-// and padding the first/last partial weeks with alignment-only placeholders.
-function buildWeeks(records, daysBack) {
+// Builds a Sun->Sat, week-per-column calendar covering [rangeStart, rangeEnd],
+// gap-filling any date missing from the API response with 0 tokens. Days after
+// today render as empty "future" cells; days outside the range pad the
+// first/last weeks as invisible placeholders.
+function buildWeeks(records, rangeStart, rangeEnd) {
   const tokensByDate = new Map(records.map((r) => [r.date, r.tokens]));
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
-  const rangeStart = new Date(today);
-  rangeStart.setDate(rangeStart.getDate() - (daysBack - 1));
-
   const gridStart = new Date(rangeStart);
   gridStart.setDate(gridStart.getDate() - gridStart.getDay());
 
-  const gridEnd = new Date(today);
+  const gridEnd = new Date(rangeEnd);
   gridEnd.setDate(gridEnd.getDate() + (6 - gridEnd.getDay()));
 
   const cells = [];
   const cursor = new Date(gridStart);
   while (cursor <= gridEnd) {
-    const inRange = cursor >= rangeStart && cursor <= today;
-    if (inRange) {
-      const iso = toISODate(cursor);
-      cells.push({ date: iso, tokens: tokensByDate.get(iso) ?? 0, placeholder: false });
-    } else {
-      cells.push({ date: toISODate(cursor), tokens: 0, placeholder: true });
-    }
+    const iso = toISODate(cursor);
+    const inRange = cursor >= rangeStart && cursor <= rangeEnd;
+    cells.push({
+      date: iso,
+      tokens: inRange ? tokensByDate.get(iso) ?? 0 : 0,
+      placeholder: !inRange,
+      future: inRange && cursor > today,
+    });
     cursor.setDate(cursor.getDate() + 1);
   }
 
@@ -67,60 +65,143 @@ function buildMonthLabels(weeks) {
   });
 }
 
+// Days elapsed in the current year (Jan 1 -> today, inclusive). The API
+// lookback is the max of this and 90 days so the compact (last-90-days)
+// view still has data early in the year.
+function daysSinceYearStart() {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const yearStart = new Date(today.getFullYear(), 0, 1);
+  return Math.round((today - yearStart) / 86400000) + 1;
+}
+
+const MAX_CELL = 13;
+const MIN_CELL = 8;
+const GAP_RATIO = 6 / 13;
+const LABEL_COL = 30;
+
+// Largest cell size (px) at which `weekCount` columns fit in `width`.
+function fitCell(width, weekCount) {
+  const avail = width - LABEL_COL - 6;
+  return Math.floor(avail / weekCount / (1 + GAP_RATIO));
+}
+
 export default function Heatmap({ refreshKey = 0 }) {
   const [days, setDays] = useState([]);
+  const [width, setWidth] = useState(0);
+  const containerRef = useRef(null);
   const { accent } = useThemeCtx();
 
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const year = today.getFullYear();
+
   useEffect(() => {
-    getHeatmap(DAYS_BACK).then(setDays).catch(() => setDays([]));
+    getHeatmap(Math.max(daysSinceYearStart(), 190)).then(setDays).catch(() => setDays([]));
   }, [refreshKey]);
 
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => setWidth(entries[0].contentRect.width));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
   const max = days.reduce((m, d) => Math.max(m, d.tokens), 0);
-  const weeks = buildWeeks(days, DAYS_BACK);
+
+  // Prefer the full Jan-Dec year, scaling cells down to fit the container.
+  // If cells would drop below MIN_CELL, fall back to a compact window: the
+  // last 3 calendar months (including the current one) plus the next month.
+  const yearStart = new Date(year, 0, 1);
+  const yearEnd = new Date(year, 11, 31);
+  const fullWeekCount = Math.ceil(
+    (Math.round((yearEnd - yearStart) / 86400000) + yearStart.getDay() + 1) / 7
+  );
+  const compact = width > 0 && fitCell(width, fullWeekCount) < MIN_CELL;
+
+  const compactStart = new Date(today.getFullYear(), today.getMonth() - 2, 1);
+  const compactEnd = new Date(today.getFullYear(), today.getMonth() + 2, 0);
+  const rangeStart = compact ? compactStart : yearStart;
+  const rangeEnd = compact ? compactEnd : yearEnd;
+  const compactLabel = `${MONTH_NAMES[compactStart.getMonth()]} – ${MONTH_NAMES[compactEnd.getMonth()]}`;
+
+  const weeks = buildWeeks(days, rangeStart, rangeEnd);
   const monthLabels = buildMonthLabels(weeks);
+
+  const cell = width > 0
+    ? Math.max(6, Math.min(MAX_CELL, fitCell(width, weeks.length)))
+    : MAX_CELL;
+  const gap = Math.max(2, Math.round(cell * GAP_RATIO));
+  const cellPx = `${cell}px`;
 
   return (
     <div className="border border-border dark:border-border-dark rounded-[14px] p-5 bg-card dark:bg-card-dark">
       <div className="flex items-center justify-between mb-4">
         <span className="font-bold text-xs tracking-[0.08em] uppercase">Activity heatmap</span>
         <span className="font-mono text-[11px] font-medium text-subtext dark:text-subtext-dark">
-          last {DAYS_BACK} days
+          {compact ? compactLabel : year}
         </span>
       </div>
-      <div className="relative pl-[34px] overflow-x-auto tt-scroll">
-        <div className="flex gap-3.5 mb-1.5 pl-[34px]">
-          {monthLabels.map((label, i) => (
-            <span key={i} className="text-[10.5px] font-medium text-subtext dark:text-subtext-dark w-11 shrink-0">
-              {label || ""}
-            </span>
-          ))}
-        </div>
-        <div className="flex gap-1.5">
-          <div className="flex flex-col gap-1.5 absolute left-0 top-0">
-            {DOW_LABELS.map((d) => (
+      <div ref={containerRef} className="overflow-x-auto tt-scroll">
+        <div className="flex" style={{ gap }}>
+          <div className="flex flex-col shrink-0 w-[30px]" style={{ gap }}>
+            <span className="h-[16px]" aria-hidden="true" />
+            {DOW_LABELS.map((d, i) => (
               <span
                 key={d}
-                className="text-[10px] font-medium text-subtext dark:text-subtext-dark h-[13px] leading-[13px]"
+                className="text-[10px] font-medium text-subtext dark:text-subtext-dark"
+                style={{ height: cellPx, lineHeight: cellPx }}
               >
-                {d}
+                {cell >= 10 || i % 2 === 1 ? d : ""}
               </span>
             ))}
           </div>
-          <div
-            className="grid gap-1.5"
-            style={{
-              gridTemplateColumns: `repeat(${weeks.length}, 13px)`,
-              gridTemplateRows: "repeat(7, 13px)",
-              gridAutoFlow: "column",
-            }}
-            role="group"
-            aria-label={`Daily token activity for the last ${DAYS_BACK} days`}
-          >
-            {weeks.map((week) =>
+          <div>
+            <div
+              className="grid h-[16px] mb-1.5"
+              style={{ gap, gridTemplateColumns: `repeat(${weeks.length}, ${cellPx})` }}
+            >
+              {monthLabels.map((label, i) =>
+                label ? (
+                  <span
+                    key={i}
+                    className="text-[10.5px] font-medium text-subtext dark:text-subtext-dark whitespace-nowrap overflow-visible"
+                    style={{ gridColumnStart: i + 1 }}
+                  >
+                    {label}
+                  </span>
+                ) : null
+              )}
+            </div>
+            <div
+              className="grid"
+              style={{
+                gap,
+                gridTemplateColumns: `repeat(${weeks.length}, ${cellPx})`,
+                gridTemplateRows: `repeat(7, ${cellPx})`,
+                gridAutoFlow: "column",
+              }}
+              role="group"
+              aria-label={compact
+                ? `Daily token activity, ${compactLabel}`
+                : `Daily token activity for ${year}`}
+            >
+              {weeks.map((week) =>
               week.map((d) => {
                 if (d.placeholder) {
                   return (
-                    <div key={d.date} className="w-[13px] h-[13px]" aria-hidden="true" />
+                    <div key={d.date} style={{ width: cellPx, height: cellPx }} aria-hidden="true" />
+                  );
+                }
+                if (d.future) {
+                  return (
+                    <div
+                      key={d.date}
+                      className="rounded-[3px]"
+                      style={{ width: cellPx, height: cellPx, background: rgba(accent, 0.03) }}
+                      aria-hidden="true"
+                    />
                   );
                 }
                 const hasData = d.tokens > 0;
@@ -140,12 +221,13 @@ export default function Heatmap({ refreshKey = 0 }) {
                     aria-label={label}
                     title={label}
                     tabIndex={0}
-                    className="w-[13px] h-[13px] rounded-[3px] focus-visible:outline focus-visible:outline-2"
-                    style={{ background: bg, boxShadow: shadow }}
+                    className="rounded-[3px] focus-visible:outline focus-visible:outline-2"
+                    style={{ width: cellPx, height: cellPx, background: bg, boxShadow: shadow }}
                   />
                 );
               })
             )}
+            </div>
           </div>
         </div>
       </div>
