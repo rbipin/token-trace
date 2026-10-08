@@ -165,7 +165,7 @@ model regardless of which tool collected the session. See
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#middleware) for how the
 middleware system works and how to add a new one.
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full architecture: collect data flow, exact source files and schemas, storage, sync, and extension points. [docs/DESIGN-HISTORY.md](docs/DESIGN-HISTORY.md) records the design decisions that shaped the project.
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full architecture: collect data flow, exact source files and schemas, storage, sync, and extension points. [docs/DESIGN-HISTORY.md](docs/DESIGN-HISTORY.md) records the design decisions that shaped the project. [changelog.md](changelog.md) tracks unreleased changes.
 
 ---
 

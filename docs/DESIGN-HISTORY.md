@@ -209,15 +209,111 @@ Filled the remaining dormant fields and completed remote payloads:
 - No backfill tooling: idempotent `collect --lookback N` re-collects sessions
   still on disk.
 
+## 2026-07-10 — Model Normalization and Collect/Sync Unification
+
+[Model normalization design](superpowers/specs/2026-07-10-model-name-normalization-design.md)
+and [collect/sync design](superpowers/specs/2026-07-10-collect-sync-unification-design.md).
+
+Raw model names remain part of session identity; `canonical_model` supplies
+stable reporting groups. A middleware stage applies normalization before
+persistence. Changed session values invalidate sync acknowledgments, so
+backfills reach remote stores. Collection and manual sync share retry logic;
+scheduled collection also retries previously failed remote writes.
+
+## 2026-07-18 — Native Scheduling
+
+[Design](superpowers/specs/2026-07-18-schedule-command-design.md).
+
+`schedule` and `unschedule` move daily collection setup into the CLI, using
+launchd on macOS and Task Scheduler on Windows. Collection scheduling stays
+separate from the dashboard daemon.
+
+## 2026-07-19 — Local Dashboard
+
+[Design](superpowers/specs/2026-07-19-dashboard-design.md).
+
+A local HTTP server and React frontend expose token totals, activity heatmaps,
+source trends, project breakdowns, and collection/sync status. Foreground and
+OS-managed daemon modes provide access to the same local database.
+
+## 2026-07-24 — Dashboard Redesign
+
+[Design](superpowers/specs/2026-07-24-dashboard-redesign-design.md).
+
+The Tokens and By Project pages adopt the Token Trace visual design with
+Tailwind styling, period tabs, and rolling statistics. Rolling windows remain
+independent of the selected reporting period. Visual categories use recorded
+token fields rather than categories invented by the reference mockup.
+The October accounting change below corrects reasoning's additive display.
+
+## 2026-07-27 — Windows Dashboard Distribution and Startup
+
+[Design](superpowers/specs/2026-07-27-windows-dashboard-fixes-design.md).
+
+Source installs include committed frontend assets, maintained by CI, so the
+dashboard works without a local JavaScript build. Windows daemon registration
+starts the task immediately. Dashboard startup and daily collection scheduling
+remain separate operations.
+
+## 2026-10-08 — Codex Collection and Daily Usage Accounting
+
+[Design](superpowers/specs/2026-10-08-codex-daily-usage-design.md) and
+[implementation plan](superpowers/plans/2026-10-08-codex-daily-usage.md).
+
+Lifetime session totals cannot locate consumption on the days when a resumed
+session actually used tokens. Codex support introduces an additive timestamped
+usage ledger while preserving existing session identity and legacy collectors.
+
+- Active and archived Codex rollouts under `CODEX_HOME` (default `~/.codex`)
+  supply CLI and editor usage. Activity selects files; their available history
+  is scanned. Source metadata supplies identity, never filenames.
+- Per-response usage takes precedence over cumulative snapshot deltas,
+  including previously persisted snapshots. Deltas require a known baseline;
+  uncertain ownership or missing data produces partial/unavailable coverage.
+- Explicit child relationships exclude ambiguous parent snapshots from
+  accepted totals, including parents outside the current lookback. Raw events
+  remain available for audit. Ambiguity persists across shorter scans until
+  explicit response ownership supersedes it.
+- Events, coverage, and lifetime summaries persist atomically. Event IDs
+  deduplicate imports and archive moves; the original local day and UTC offset
+  remain pinned across reimports and timezone changes.
+- CLI and dashboard period totals use daily events where coverage exists and
+  legacy session totals otherwise, without counting both. Distinct session
+  counts retain raw identity. Reasoning is included in output, displayed
+  separately, and never added again to token totals.
+- Optional remote event support preserves session-only store compatibility.
+  Session/coverage and event acknowledgments remain independent. Coverage
+  acknowledgment compares the exact revision sent atomically; enabling event
+  sync backfills coverage even for sessions previously acknowledged without
+  it. Remote totals must apply the same snapshot exclusions as local reports.
+- Parsing diagnoses malformed records and incomplete UTF-8 tails while
+  preserving valid rows and unrelated sessions. No prompts, response content,
+  or raw working-directory paths enter stored usage records.
+
+Implementation followed failing-test → implementation → passing-test order.
+The baseline reporting failures were stale calendar fixtures; those now use
+the current reporting month. Final review added regressions for late child
+discovery, incomplete UTF-8 tails, coverage changes during sync, and enabling
+remote event support after session-only sync.
+
+Local schema upgrades are additive. The optional remote migration is supplied
+in [migrations/2026-10-08-usage-events.sql](migrations/2026-10-08-usage-events.sql);
+it has not been applied to a live remote. Frontend source changes are verified
+with a temporary build; CI owns the committed distribution assets.
+
 ---
 
 ## Standing invariants established across these designs
 
 - Collectors are **read-only** against their sources; `collect` is idempotent
-  (last-write-wins upsert keyed `(session_id, source, model)`).
+  (last-write-wins sessions keyed `(session_id, source, model)`; usage events
+  keyed `(source, session_id, event_id)`).
 - Stdlib-only at runtime; third-party deps only as optional store extras.
-- No VS Code / Web / Desktop collectors — those surfaces never persist token
-  data to disk.
+- Collection requires persisted local usage data. Codex editor rollouts are
+  supported; surfaces without such data cannot provide measured token usage.
+- Daily measured usage and legacy session fallback are exclusive. Raw audit
+  events can include snapshots excluded from accepted accounting totals.
+- Reasoning tokens are a subset of output, never an additional total category.
 - `project_identities` is local-only and excluded from sync by construction.
 - Adding a collector or store requires no changes outside its own module plus
   registration (Open/Closed pipeline).

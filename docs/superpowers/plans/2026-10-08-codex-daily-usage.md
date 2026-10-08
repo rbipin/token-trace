@@ -776,3 +776,34 @@ frontend rendering tests passed, and the production frontend build passed into
 `/private/tmp/tokentracer-frontend-build`. CI-owned committed static assets were
 preserved. The checked-in remote SQL migration was reviewed but not applied to
 live infrastructure.
+
+Final independent review found four Important issues; each was reproduced by a
+failing regression before fixes: late child discovery with a parent outside
+lookback, incomplete UTF-8 tails, coverage corrections during an in-flight sync,
+and event-enabled coverage backfill after session-only sync. All four were fixed
+in one review-fix pass. No Critical or Minor findings were reported. Verification
+after fixes: **455 Python tests passed**, with five existing deprecation warnings.
+The three frontend tests and production build remain applicable because the
+review fixes changed collector and sync code only.
+
+Review did not judge compatibility with live Codex logs beyond supported
+synthetic fixtures, execution/access controls of the unapplied remote migration,
+or CI-generated static assets. Existing calendar-filter modifier ordering was
+outside the reviewed regression scope.
+
+### Execution decisions
+
+- Ruling: Work in the current codex-support feature checkout, preserving user plans — no consent to create another worktree was supplied, and current checkout was used for the requested baseline fix — cost if wrong: implementation changes are visible in the shared checkout.
+- Ruling: Planning-only constraint describes prior request, now superseded by explicit implementation authorization — implement and test temporary databases only, keep live data/remote schemas untouched — cost if wrong: local code changes require review.
+- Ruling: Coverage corrections must invalidate session acknowledgments, including transitions without events — remote disclosure must retry independently of unchanged metrics — cost if wrong: unnecessary session resync.
+- Task 3: Ruling: Backfill fixture mtime moved from midnight UTC to noon UTC — midnight UTC is the preceding local date in Detroit — cost if wrong: boundary coverage remains in dedicated timezone tests.
+- Task 3: Ruling: Cumulative accounting_reset=true is supported only as an explicit source marker; implicit decreases never invent reset usage — real logs lacking a proven baseline remain partial — cost if wrong: conservative historical undercount surfaced to users.
+- Task 5: Ruling: Report/dashboard entry points initialize the additive SQLite schema before querying the new views — otherwise existing databases fail until collect is run — cost if wrong: a report performs additive schema writes.
+- Task 5: Ruling: Add a small UsageAttribution component and native Node/Vite SSR tests — rendered proportions and notices need behavioral coverage — cost if wrong: three additional frontend regression tests to maintain.
+- Task 5: Ruling: Build verification writes to /private/tmp/tokentracer-frontend-build, preserving CI-managed static assets — repository policy reserves committed bundles for CI — cost if wrong: local preview still uses old prebuilt assets until CI builds.
+- Task 7: Ruling: When explicit descendant metadata makes parent cumulative ownership ambiguous, exclude those snapshots from accepted reports and lifetime summaries, retain raw ledger history, and sync the partial coverage reason — prevents 150 parent + 50 child becoming 200 guessed tokens — cost if wrong: conservative parent undercount, disclosed as partial; remote consumers must use coverage to exclude ambiguous parent snapshots.
+- Task 7: Ruling: Per-response precedence applies to persisted snapshots as well as new imports — otherwise a format transition double counts the same request — retain raw audit events but exclude snapshots whenever response events exist for that session; cost if wrong: unknown old snapshot residuals are excluded rather than guessed.
+- Task 7: Ruling: Event acknowledgment checks the exact persisted event revision — a correction committed during an in-flight push must stay pending — cost if wrong: conservative event retry.
+- Task 7: Ruling: Persist ambiguous-parent coverage across short-lookback reimports until explicit response ownership supersedes snapshots — a missing child in the current scan does not prove the old aggregate became independent — cost if wrong: cumulative-only parent usage remains conservatively partial.
+- Final: Ruling: Propagate discovered parent ambiguity independently of current parent events, but preserve explicit persisted response ownership — late discovery must reconcile old snapshots — cost if wrong: conservative partial parent coverage.
+- Final: Ruling: Record coverage receipts separately from session-only acknowledgments and compare session/coverage revisions under a write transaction — optional event enablement and concurrent corrections must retry — cost if wrong: one extra metadata push per previously synchronized session.

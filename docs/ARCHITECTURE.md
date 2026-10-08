@@ -126,6 +126,7 @@ child response records remain attributable to their originating session.
 | `usage_events` | Raw immutable accounting identities `(source,session_id,event_id)`; corrected values are upserted |
 | `usage_coverage` | Session status `measured`, `partial`, or `unavailable`; absent marker means legacy |
 | `usage_event_sync_log` | Independent acknowledgment per event and remote store |
+| `usage_coverage_sync_log` | Exact coverage revision received for each session/model and remote store |
 | `usage_daily` | Accepted per-model local-day usage; lifetime metadata retained separately |
 | `reporting_usage` | Daily ledger rows plus exclusively uncovered legacy sessions |
 
@@ -135,6 +136,9 @@ input and stored separately; reasoning remains a subset of output. Footprint is
 a single request's inclusive input plus output. Corrections clear affected event
 acknowledgments; acknowledgments compare revisions so an in-flight stale push
 cannot hide a correction. Coverage changes also invalidate session sync markers.
+Session-batch acknowledgments atomically compare the sent session and coverage
+revision with current storage. Late child discovery updates persisted parent
+coverage even when the parent rollout is outside the collection lookback.
 Atomic rollback protects all three batch relations.
 
 All dashboard usage surfaces and CLI period rollups use `reporting_usage`.
@@ -150,6 +154,8 @@ operators apply `docs/migrations/2026-10-08-usage-events.sql` (adapt default tab
 names if configured otherwise). Session and event retries/acknowledgments are
 independent per store, and dry-run reports both counts without remote writes.
 Event-aware session batches carry `usage_coverage` and `usage_coverage_reason`.
+Enabling event support also sends coverage for sessions already synchronized
+through the session-only interface; a separate acknowledgment records receipt.
 Remote consumers must exclude covered legacy summaries, prefer response events
 over snapshots within each session, and omit snapshot deltas with reason
 `ambiguous descendant cumulative usage ownership`. Summing the raw audit table
