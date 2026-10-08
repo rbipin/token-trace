@@ -43,3 +43,13 @@ def test_process_handles_batch_of_multiple_records():
     records = [_rec("claude-haiku-4-5-20251001"), _rec("claude-sonnet-4-6")]
     results = mw.process(records)
     assert [r.canonical_model for r in results] == ["claude-haiku-4-5", "claude-sonnet-4-6"]
+
+
+def test_event_normalization_preserves_raw_identity():
+    from usage_helpers import event
+    from dataclasses import replace
+    original=replace(event(),model='gpt-custom-20261008')
+    normalized=ModelNormalizeMiddleware().process_events([original])[0]
+    assert normalized.canonical_model == 'gpt-custom'
+    assert normalized.model == 'gpt-custom-20261008'
+    assert normalized.key == original.key

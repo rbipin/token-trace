@@ -119,3 +119,71 @@ def test_pipeline_middleware_failure_aborts_run(tmp_db):
             TrackerPipeline().add(collector).since(date(2026, 1, 1))
             .middlewares(_BoomMiddleware()).stores(SqliteStore(tmp_db)).run()
         )
+
+
+from datetime import date
+from src.models import SessionRecord
+from src.usage import CollectionBatch, UsageCoverage
+from src.pipeline import TrackerPipeline
+from src.stores.sqlite import SqliteStore
+from usage_helpers import event
+
+def test_batch_and_legacy_collectors_share_pipeline(tmp_path):
+    class Legacy:
+        source = 'claude_cli'
+        def collect(self, since):
+            return [SessionRecord('legacy','claude_cli', date='2026-10-08', input_tokens=20)]
+    class Codex:
+        source = 'codex_cli'
+        def collect_batch(self, since):
+            rec = SessionRecord('s1','codex_cli', model='gpt-5.3-codex',
+                                date='2026-10-08', input_tokens=100)
+            return CollectionBatch((rec,), (event(),),
+                (UsageCoverage('codex_cli','s1','measured'),))
+    store = SqliteStore(tmp_path / 'usage.db')
+    result = TrackerPipeline().add(Legacy()).add(Codex()).since(date(2026,10,8)).stores(store).run()
+    assert result.records_written == 2
+    assert len(store.unsynced_events_for('remote')) == 1
+
+
+def test_batch_events_receive_context_and_normalization(tmp_path):
+    from src.middleware.model_normalize import ModelNormalizeMiddleware
+    from dataclasses import replace
+    class Codex:
+        source='codex_cli'
+        def collect_batch(self,since):
+            rec=SessionRecord('s1','codex_cli',model='test-model-20261008',date='2026-10-08')
+            return CollectionBatch((rec,),(replace(event(),model=rec.model),),
+                (UsageCoverage('codex_cli','s1','measured'),),('synthetic diagnostic',))
+    store=SqliteStore(tmp_path/'usage.db')
+    result=TrackerPipeline().add(Codex()).context('work').middlewares(ModelNormalizeMiddleware()).since(date(2026,10,8)).stores(store).run()
+    e=store.unsynced_events_for('remote')[0]
+    assert e.context == 'work'
+    assert e.canonical_model == 'test-model'
+    assert e.model == 'test-model-20261008'
+    assert result.events_written == 1
+    assert 'synthetic diagnostic' in result.errors
+
+
+def test_legacy_primary_receives_summary_and_capability_warning():
+    class Codex:
+        source='codex_cli'
+        def collect_batch(self,since):
+            return CollectionBatch((SessionRecord('s1','codex_cli',date='2026-10-08'),),(event(),))
+    class LegacyStore:
+        name='custom'
+        def upsert(self,records):
+            return len(records)
+        def close(self):pass
+    result=TrackerPipeline().add(Codex()).since(date(2026,10,8)).stores(LegacyStore()).run()
+    assert result.records_written == 1
+    assert result.events_written == 0
+    assert any('event' in e and 'custom' in e for e in result.errors)
+
+
+def test_run_result_existing_positional_arguments_keep_their_meaning():
+    from src.pipeline import RunResult
+    result=RunResult(1,2,['collector failed'],['remote failed'])
+    assert result.errors == ['collector failed']
+    assert result.stores_failed == ['remote failed']
+    assert result.events_written == 0

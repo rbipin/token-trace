@@ -6,7 +6,7 @@ import sys
 from datetime import date, timedelta
 from pathlib import Path
 
-from src.collectors import ClaudeCliCollector, CopilotCliCollector
+from src.collectors import ClaudeCliCollector, CopilotCliCollector, CodexCliCollector
 from src.commands.common import load_remote_stores, run_sync
 from src.config import Config
 from src.middleware import ModelNormalizeMiddleware
@@ -33,6 +33,7 @@ def _build_pipeline(cfg: Config) -> tuple[TrackerPipeline, ProjectIdentityStore 
     pipeline = (
         TrackerPipeline()
         .context(cfg.context)
+        .add(CodexCliCollector(paths.codex_home, resolver=resolver))
         .add(CopilotCliCollector(paths.copilot_home, resolver=resolver))
         .add(ClaudeCliCollector(paths.claude_projects, resolver=resolver))
         .middlewares(ModelNormalizeMiddleware())
@@ -97,6 +98,7 @@ class CollectCommand:
 
         print(
             f"Collected {result.records_written} session records "
+            f"and {getattr(result, 'events_written', 0)} usage events "
             f"from {result.collectors_run} collectors "
             f"(since {since.isoformat()})"
         )

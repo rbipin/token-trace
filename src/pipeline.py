@@ -13,6 +13,7 @@ from .collectors.base import ActivityCollector
 from .middleware.base import RecordMiddleware
 from .models import DEFAULT_CONTEXT, SessionRecord, merge_records
 from .stores import SessionStore
+from .usage import CollectionBatch, UsageEvent
 
 
 @dataclass(frozen=True)
@@ -23,6 +24,7 @@ class RunResult:
     collectors_run: int
     errors: List[str] = field(default_factory=list)
     stores_failed: List[str] = field(default_factory=list)
+    events_written: int = 0
 
 
 class TrackerPipeline:
@@ -80,32 +82,49 @@ class TrackerPipeline:
             raise ValueError("stores(...) must be set before run()")
 
         records: list[SessionRecord] = []
+        events: list[UsageEvent] = []
+        coverage = {}
         errors: list[str] = []
 
-        def _collect(collector: ActivityCollector) -> tuple[list[SessionRecord], str | None]:
+        def _collect(collector: ActivityCollector) -> tuple[CollectionBatch, str | None]:
             try:
-                return list(collector.collect(self._since)), None
+                if callable(getattr(collector, 'collect_batch', None)):
+                    return collector.collect_batch(self._since), None
+                return CollectionBatch(sessions=tuple(collector.collect(self._since))), None
             except Exception as exc:
                 name = getattr(collector, "source", type(collector).__name__)
-                return [], f"{name}: {exc}"
+                return CollectionBatch(), f"{name}: {exc}"
 
         with ThreadPoolExecutor(max_workers=max(len(self._collectors), 1)) as pool:
             futures = {pool.submit(_collect, c): c for c in self._collectors}
             for future in as_completed(futures):
-                recs, err = future.result()
-                records.extend(recs)
+                batch, err = future.result()
+                records.extend(batch.sessions)
+                events.extend(batch.events)
+                coverage.update({(c.source,c.session_id): c for c in batch.coverage})
+                errors.extend(batch.diagnostics)
                 if err:
                     errors.append(err)
 
         merged = merge_records(records)
         merged = [replace(rec, context=self._context) for rec in merged]
 
+        events = [replace(e,context=self._context) for e in {e.key:e for e in events}.values()]
         for mw in self._middlewares:
             if mw.applies(merged):
                 merged = mw.process(merged)
+            if callable(getattr(mw, 'process_events', None)):
+                events = mw.process_events(events)
 
         # SQLite (first store) must succeed — exceptions propagate
-        written = self._stores[0].upsert(merged)
+        events_written = 0
+        if callable(getattr(self._stores[0], 'upsert_batch', None)):
+            written = self._stores[0].upsert_batch(CollectionBatch(tuple(merged),tuple(events),tuple(coverage.values())))
+            events_written = len(events)
+        else:
+            written = self._stores[0].upsert(merged)
+            if events or coverage:
+                errors.append(f'{self._stores[0].name}: usage events require batch persistence; only session summaries stored')
         self._stores[0].close()
 
         # Remotes: parallel, log-and-continue
@@ -133,6 +152,7 @@ class TrackerPipeline:
         return RunResult(
             records_written=written,
             collectors_run=len(self._collectors),
+            events_written=events_written,
             errors=errors,
             stores_failed=stores_failed,
         )
