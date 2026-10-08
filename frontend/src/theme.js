@@ -24,6 +24,7 @@ export function rgba(hex, a) {
 // Harness icon + brand accent, matched per-theme (dark/light variant of each hue).
 // Keyed by the raw `source` string collectors write to SessionRecord (see collectors/*.py).
 const HARNESS_TABLE = {
+  codex_cli: { label: "Codex", icon: "◇", color: () => "#60a5fa" },
   claude_cli: { label: "Claude", icon: "✳", color: (dark) => (dark ? "#22c55e" : "#22c55e") },
   copilot_cli: { label: "Copilot", icon: "⌘", color: (dark) => (dark ? "#f472b6" : "#db2777") },
 };

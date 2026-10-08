@@ -7,6 +7,7 @@ import Heatmap from "../components/Heatmap.jsx";
 import TrendChart from "../components/TrendChart.jsx";
 import HarnessCards from "../components/HarnessCards.jsx";
 import ContextBreakdown, { COLORS as CONTEXT_COLORS } from "../components/ContextBreakdown.jsx";
+import UsageAttribution from "../components/UsageAttribution.jsx";
 import ModelBreakdown from "../components/ModelBreakdown.jsx";
 import { formatTokens } from "../format.js";
 import { formatRelativeTime } from "../relativeTime.js";
@@ -34,7 +35,6 @@ export default function TokensPage() {
         { label: "Output", value: summary.output_tokens },
         { label: "Cache Read", value: summary.cache_read_tokens },
         { label: "Cache Creation", value: summary.cache_creation_tokens },
-        { label: "Reasoning", value: summary.reasoning_tokens },
       ]
     : [];
   const contextTotal = contextCategories.reduce((sum, c) => sum + c.value, 0) || 1;
@@ -93,6 +93,7 @@ export default function TokensPage() {
                 <div key={s.label} style={{ width: `${s.pct}%`, background: s.color }} />
               ))}
             </div>
+            <UsageAttribution attribution={summary?.attribution} />
             <HarnessCards summary={summary} />
           </div>
           <ContextBreakdown summary={summary} />

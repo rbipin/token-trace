@@ -15,7 +15,6 @@ export default function ContextBreakdown({ summary }) {
     { label: "Output", value: summary.output_tokens },
     { label: "Cache Read", value: summary.cache_read_tokens },
     { label: "Cache Creation", value: summary.cache_creation_tokens },
-    { label: "Reasoning", value: summary.reasoning_tokens },
   ];
   const total = categories.reduce((sum, c) => sum + c.value, 0) || 1;
   const maxVal = Math.max(...categories.map((c) => c.value), 1);
@@ -45,6 +44,9 @@ export default function ContextBreakdown({ summary }) {
           </div>
         ))}
       </div>
+      <p className="text-xs text-subtext dark:text-subtext-dark mt-3">
+        Reasoning (included in output): {formatTokens(summary.reasoning_tokens || 0).abbreviated}
+      </p>
     </div>
   );
 }

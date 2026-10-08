@@ -7,6 +7,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 from src.dashboard import queries
+from src.stores.sqlite import SqliteStore
 
 _CONTENT_TYPES = {
     ".html": "text/html", ".js": "application/javascript",
@@ -102,6 +103,7 @@ class _DashboardHandler(BaseHTTPRequestHandler):
 
 
 def make_server(db_path: Path, static_dir: Path, port: int) -> ThreadingHTTPServer:
+    SqliteStore(db_path).close()
     handler_cls = type("BoundDashboardHandler", (_DashboardHandler,),
                         {"db_path": db_path, "static_dir": static_dir})
     return ThreadingHTTPServer(("127.0.0.1", port), handler_cls)

@@ -6,6 +6,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, Sequence
 
+from .stores.sqlite import SqliteStore
+from .dashboard.queries import attribution
+
 _PERIOD_SQL = {
     "all":   "strftime('%Y-%m', date)",
     "day":   "date",
@@ -50,6 +53,7 @@ class SessionsDetailedView:
             SELECT
                 COALESCE(project, '—')                              AS project,
                 source,
+                'lifetime' AS activity_scope,
                 COALESCE(canonical_model, model)                       AS model,
                 start_ts,
                 end_ts,
@@ -62,7 +66,7 @@ class SessionsDetailedView:
                 turns,
                 tool_calls,
                 input_tokens + cache_creation_tokens + cache_read_tokens AS denom
-            FROM sessions
+            FROM period_sessions
             WHERE {ctx.date_filter}{ctx.model_filter}
             ORDER BY COALESCE(start_ts, date) DESC
         """, ctx.params).fetchall()
@@ -100,9 +104,9 @@ class SessionsDetailedView:
         return _format_table(
             ctx.hit_rate,
             ctx.cost_saved,
-            headers=["Project", "Source", "Model", "Start", "End",
+            headers=["Project", "Source", "Model", "LifetimeStart", "LifetimeEnd",
                      "Input", "Output", "Reasoning", "CacheRead", "CacheCreate",
-                     "CacheHit%", "CtxPeak", "Turns", "Tools"],
+                     "CacheHit%", "CtxPeak", "LifetimeRequests", "LifetimeTools"],
             rows=table_rows,
         )
 
@@ -122,7 +126,7 @@ class PeriodSummaryView:
                 SUM(output_tokens)                        AS output_tokens,
                 SUM(cache_creation_tokens)                AS cache_creation_tokens,
                 SUM(cache_read_tokens)                    AS cache_read_tokens
-            FROM sessions
+            FROM reporting_usage
             WHERE {ctx.date_filter}{ctx.model_filter}
             GROUP BY {period_expr}, source, COALESCE(canonical_model, model)
             ORDER BY period DESC, input_tokens DESC
@@ -140,7 +144,7 @@ class PeriodSummaryView:
         return _format_table(
             ctx.hit_rate,
             ctx.cost_saved,
-            headers=["Period", "Source", "Model", "Turns",
+            headers=["Period", "Source", "Model", "Requests",
                      "Input", "Output", "CacheCreate", "CacheRead"],
             rows=[
                 [r["period"], r["source"], r["model"], r["turns"],
@@ -164,7 +168,7 @@ class ByProjectView:
                 SUM(input_tokens)       AS input_tokens,
                 SUM(output_tokens)      AS output_tokens,
                 SUM(cache_read_tokens)  AS cache_read_tokens
-            FROM sessions
+            FROM reporting_usage
             WHERE project IS NOT NULL
               AND {ctx.date_filter}{ctx.model_filter}
             GROUP BY project, date, COALESCE(canonical_model, model)
@@ -190,7 +194,7 @@ class ByProjectView:
         return _format_table(
             ctx.hit_rate,
             ctx.cost_saved,
-            headers=["Project", "Date", "Model", "Turns", "Input", "Output", "CacheRead"],
+            headers=["Project", "Date", "Model", "Requests", "Input", "Output", "CacheRead"],
             rows=[
                 [r["project"], r["date"], r["model"], r["turns"],
                  r["input_tokens"], r["output_tokens"], r["cache_read_tokens"]]
@@ -206,16 +210,17 @@ class SessionsListView:
         rows = ctx.conn.execute(f"""
             SELECT
                 session_id,
+                'lifetime' AS activity_scope,
                 COALESCE(project, '—')                                      AS project,
                 date,
                 start_ts,
                 end_ts,
                 COALESCE(canonical_model, model)                             AS model,
                 turns,
-                input_tokens + cache_creation_tokens + cache_read_tokens    AS total_tokens,
+                input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens AS total_tokens,
                 cache_read_tokens,
                 input_tokens + cache_creation_tokens + cache_read_tokens    AS denom
-            FROM sessions
+            FROM period_sessions
             WHERE {ctx.date_filter}{ctx.model_filter}
             ORDER BY COALESCE(start_ts, date) DESC
         """, ctx.params).fetchall()
@@ -244,7 +249,7 @@ class SessionsListView:
         return _format_table(
             ctx.hit_rate,
             ctx.cost_saved,
-            headers=["Session", "Project", "Date", "Start", "End", "Turns", "Tokens", "CacheHit%"],
+            headers=["Session", "Project", "Date", "LifetimeStart", "LifetimeEnd", "LifetimeRequests", "Tokens", "CacheHit%"],
             rows=table_rows,
         )
 
@@ -346,18 +351,19 @@ class UsageReporter:
     db_path: Path
 
     def _connect(self) -> sqlite3.Connection:
+        SqliteStore(self.db_path).close()
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         return conn
 
-    def _cache_efficiency(self, conn: sqlite3.Connection) -> tuple[float, float]:
-        row = conn.execute("""
+    def _cache_efficiency(self, conn: sqlite3.Connection, where: str, params: list) -> tuple[float, float]:
+        row = conn.execute(f"""
             SELECT
                 COALESCE(SUM(input_tokens), 0),
                 COALESCE(SUM(cache_creation_tokens), 0),
                 COALESCE(SUM(cache_read_tokens), 0)
-            FROM sessions
-        """).fetchone()
+            FROM reporting_usage WHERE {where}
+        """,params).fetchone()
         total = row[0] + row[1] + row[2]
         if total == 0:
             return 0.0, 0.0
@@ -373,7 +379,6 @@ class UsageReporter:
         models: Sequence[str] | None,
         as_json: bool,
     ) -> ReportContext:
-        hit_rate, cost_saved = self._cache_efficiency(conn)
         date_filter = _DATE_RANGE_SQL[period]
         model_filter = ""
         params: list = []
@@ -381,6 +386,7 @@ class UsageReporter:
             placeholders = ",".join("?" * len(models))
             model_filter = f" AND COALESCE(canonical_model, model) IN ({placeholders})"
             params.extend(models)
+        hit_rate, cost_saved = self._cache_efficiency(conn, date_filter + model_filter, params)
         return ReportContext(
             conn=conn,
             period=period,
@@ -405,8 +411,31 @@ class UsageReporter:
             raise ValueError(f"period must be one of {list(_PERIOD_SQL)}")
         conn = self._connect()
         try:
-            ctx = self._make_context(conn, period, models, as_json)
-            return _pick_strategy(summary, by_project, period, detailed).render(ctx)
+            ctx = self._make_context(conn, 'all' if detailed else period, models, as_json)
+            conn.execute(f"CREATE TEMP TABLE scoped_usage AS SELECT * FROM reporting_usage WHERE {ctx.date_filter}{ctx.model_filter}",ctx.params)
+            conn.execute("""CREATE TEMP VIEW period_sessions AS
+                SELECT session_id,source,model,canonical_model,MIN(date) AS date,project,
+                    MAX(lifetime_start_ts) AS start_ts, MAX(lifetime_end_ts) AS end_ts,
+                    SUM(input_tokens) AS input_tokens,SUM(output_tokens) AS output_tokens,
+                    SUM(cache_read_tokens) AS cache_read_tokens,SUM(cache_creation_tokens) AS cache_creation_tokens,
+                    SUM(reasoning_tokens) AS reasoning_tokens,MAX(context_peak_tokens) AS context_peak_tokens,
+                    MAX(lifetime_turns) AS turns,MAX(lifetime_tool_calls) AS tool_calls
+                FROM scoped_usage GROUP BY source,session_id,model
+            """)
+            quality = attribution(conn,ctx.date_filter+ctx.model_filter,ctx.params)
+            output = _pick_strategy(summary, by_project, period, detailed).render(ctx)
+            if as_json:
+                payload=json.loads(output)
+                payload['attribution']=quality
+                return json.dumps(payload,indent=2)
+            notices=[]
+            if quality['legacy_tokens']:
+                notices.append('Historical usage is assigned to session start dates.')
+            if quality['partial_session_count']:
+                notices.append(f"{quality['partial_session_count']} session(s) have partial usage.")
+            if quality['unavailable_session_count']:
+                notices.append(f"{quality['unavailable_session_count']} session(s) have unavailable usage; consumption is unknown.")
+            return output + ('\n'+'\n'.join(notices)+'\n' if notices else '')
         finally:
             conn.close()
 

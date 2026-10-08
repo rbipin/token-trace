@@ -77,7 +77,7 @@ def _rolling_stats(conn: sqlite3.Connection, extra: str, params: list) -> dict:
         row = conn.execute(f"""
             SELECT COALESCE(SUM({_TOKENS_EXPR}), 0) AS tokens,
                    COUNT(DISTINCT date) AS active_days
-            FROM sessions
+            FROM reporting_usage
             WHERE {where}{extra}
         """, wparams + params).fetchone()
         return row["tokens"], row["active_days"]
@@ -105,13 +105,16 @@ def summary(
 ) -> dict:
     where, params = date_filter(period, start, end)
     extra = ""
+    filter_params = []
     if project:
         names = [project] if isinstance(project, str) else list(project)
         extra += f" AND project IN ({','.join('?' * len(names))})"
-        params.extend(names)
+        filter_params.extend(names)
     if source:
         extra += " AND source = ?"
-        params.append(source)
+        filter_params.append(source)
+
+    params += filter_params
 
     totals = conn.execute(f"""
         SELECT
@@ -123,11 +126,11 @@ def summary(
             COUNT(*)                                 AS session_count,
             COUNT(DISTINCT date)                     AS active_days,
             MIN(date)                                AS first_date
-        FROM sessions
+        FROM reporting_usage
         WHERE {where}{extra}
     """, params).fetchone()
 
-    rolling = _rolling_stats(conn, extra, params)
+    rolling = _rolling_stats(conn, extra, filter_params)
 
     total_tokens = (
         totals["input_tokens"] + totals["output_tokens"]
@@ -138,7 +141,7 @@ def summary(
         SELECT source,
                SUM({_TOKENS_EXPR}) AS tokens,
                COUNT(DISTINCT COALESCE(canonical_model, model)) AS model_count
-        FROM sessions
+        FROM reporting_usage
         WHERE {where}{extra}
         GROUP BY source
         ORDER BY tokens DESC
@@ -147,7 +150,7 @@ def summary(
     model_rows = conn.execute(f"""
         SELECT COALESCE(canonical_model, model) AS model,
                SUM({_TOKENS_EXPR}) AS tokens
-        FROM sessions
+        FROM reporting_usage
         WHERE {where}{extra}
         GROUP BY COALESCE(canonical_model, model)
         ORDER BY tokens DESC
@@ -163,7 +166,8 @@ def summary(
         "cache_read_tokens": totals["cache_read_tokens"],
         "cache_creation_tokens": totals["cache_creation_tokens"],
         "reasoning_tokens": totals["reasoning_tokens"],
-        "session_count": totals["session_count"],
+        "session_count": conn.execute(f"SELECT COUNT(*) FROM (SELECT source,session_id FROM reporting_usage WHERE {where}{extra} GROUP BY source,session_id)",params).fetchone()[0],
+        "attribution": attribution(conn, where + extra, params),
         "active_days": totals["active_days"],
         "first_date": totals["first_date"],
         "harnesses": [
@@ -179,11 +183,28 @@ def summary(
     }
 
 
+def attribution(conn: sqlite3.Connection, where: str, params: list) -> dict:
+    """Disclose known daily/legacy tokens and coverage without inventing missing days."""
+    legacy=conn.execute(f"SELECT COALESCE(SUM({_TOKENS_EXPR}),0) FROM reporting_usage WHERE ({where}) AND attribution='legacy'",params).fetchone()[0]
+    rows=conn.execute(f"""
+        SELECT source,session_id,coverage FROM reporting_usage WHERE {where}
+        UNION
+        SELECT source,session_id,coverage FROM (
+            SELECT s.session_id,s.source,s.model,s.canonical_model,s.date,s.project,s.context,c.status AS coverage
+            FROM sessions s JOIN usage_coverage c ON c.source=s.source AND c.session_id=s.session_id
+            WHERE NOT EXISTS (SELECT 1 FROM usage_events e WHERE e.source=s.source AND e.session_id=s.session_id)
+        ) WHERE {where}
+    """,params+params).fetchall()
+    statuses={(r['source'],r['session_id']):r['coverage'] for r in rows}
+    return dict(legacy_tokens=legacy,partial_session_count=sum(v=='partial' for v in statuses.values()),
+                unavailable_session_count=sum(v=='unavailable' for v in statuses.values()))
+
+
 def heatmap(conn: sqlite3.Connection, days: int = 180) -> list[dict]:
     where, params = _last_n_days_filter(days)
     rows = conn.execute(f"""
         SELECT date, SUM({_TOKENS_EXPR}) AS tokens
-        FROM sessions
+        FROM reporting_usage
         WHERE {where}
         GROUP BY date
         ORDER BY date
@@ -195,7 +216,7 @@ def trend(conn: sqlite3.Connection, days: int = 30) -> list[dict]:
     where, params = _last_n_days_filter(days)
     rows = conn.execute(f"""
         SELECT date, source, SUM({_TOKENS_EXPR}) AS tokens
-        FROM sessions
+        FROM reporting_usage
         WHERE {where}
         GROUP BY date, source
         ORDER BY date, source
@@ -215,7 +236,7 @@ def projects(
     where, params = date_filter(period, start, end)
     rows = conn.execute(f"""
         SELECT project, SUM({_TOKENS_EXPR}) AS tokens
-        FROM sessions
+        FROM reporting_usage
         WHERE project IS NOT NULL AND {where}
         GROUP BY project
         ORDER BY tokens DESC
