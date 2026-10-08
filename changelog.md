@@ -1,9 +1,13 @@
 # Changelog
 
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+
 Changes recorded here start with the Codex daily usage implementation.
 Earlier releases are documented in the repository's Git tags and release notes.
 
-## Unreleased
+## [Unreleased]
 
 ### Added
 
@@ -15,6 +19,8 @@ Earlier releases are documented in the repository's Git tags and release notes.
   attribution.
 - Optional remote usage-event synchronization with independent retries and an
   [additive Supabase migration](docs/migrations/2026-10-08-usage-events.sql).
+  Remote event sync is opt-in and requires applying the migration and
+  configuring `usage_table`; local SQLite upgrades run automatically.
 
 ### Changed
 
@@ -24,6 +30,7 @@ Earlier releases are documented in the repository's Git tags and release notes.
   category.
 - Per-response events supersede cumulative snapshots. Ambiguous parent
   snapshots remain in the audit ledger but are excluded from accepted totals.
+  Remote event consumers must apply the same exclusions to avoid double-counting.
 - Event dates and UTC offsets remain stable on reimport; event corrections
   invalidate acknowledgments and retry independently for each remote store.
 - Enabling remote event synchronization backfills coverage metadata for
@@ -41,14 +48,7 @@ Earlier releases are documented in the repository's Git tags and release notes.
 - Coverage changes committed during an in-flight remote push being incorrectly
   acknowledged as synchronized.
 
-### Upgrade notes
-
-- Local SQLite upgrades run automatically. Remote event sync is opt-in and
-  requires applying the supplied migration and configuring `usage_table`.
-- Remote event consumers must mirror local response precedence and ambiguous
-  parent exclusions; summing all raw audit events can double-count usage.
-- No release version has been changed and no live remote migration has been
-  applied. CI rebuilds the committed dashboard assets from frontend source.
-
 See the [design history](docs/DESIGN-HISTORY.md) for accounting decisions and
 links to the approved design and implementation plan.
+
+[Unreleased]: https://github.com/rbipin/TokenTrace/compare/v1.0.6...HEAD
