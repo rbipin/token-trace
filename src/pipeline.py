@@ -144,10 +144,15 @@ class TrackerPipeline:
             return None
 
         if len(self._stores) > 1:
-            with ThreadPoolExecutor(max_workers=len(self._stores) - 1) as pool:
-                for err in pool.map(_push, self._stores[1:]):
-                    if err:
-                        stores_failed.append(err)
+            if callable(getattr(self._stores[0],'unsynced_for',None)):
+                from .commands.common import run_sync
+                synced=run_sync(self._stores[0],self._stores[1:],False)
+                stores_failed.extend(f"{name}: {info.get('error','remote sync failed')}" for name,info in synced.items() if info.get('failed'))
+            else:
+                with ThreadPoolExecutor(max_workers=len(self._stores) - 1) as pool:
+                    for err in pool.map(_push, self._stores[1:]):
+                        if err:
+                            stores_failed.append(err)
 
         return RunResult(
             records_written=written,

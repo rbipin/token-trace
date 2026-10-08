@@ -7,7 +7,7 @@ from contextlib import closing
 from pathlib import Path
 
 from ..models import SessionRecord
-from ..usage import CollectionBatch, UsageEvent
+from ..usage import CollectionBatch, UsageEvent, UsageCoverage
 from . import sqlite_usage
 from . import SessionStore
 
@@ -163,6 +163,15 @@ class SqliteStore:
             written = self._upsert_sessions(conn, batch.sessions)
             sqlite_usage.persist(conn, batch)
         return written
+
+    def coverage_for_sessions(self, records: list[SessionRecord]) -> tuple[UsageCoverage, ...]:
+        coverage = []
+        with closing(self._connect()) as conn:
+            for source, sid in dict.fromkeys((r.source, r.session_id) for r in records):
+                row = conn.execute('SELECT status,reason FROM usage_coverage WHERE source=? AND session_id=?', (source,sid)).fetchone()
+                if row:
+                    coverage.append(UsageCoverage(source,sid,*row))
+        return tuple(coverage)
 
     def unsynced_events_for(self, store_name: str) -> list[UsageEvent]:
         with closing(self._connect()) as conn:

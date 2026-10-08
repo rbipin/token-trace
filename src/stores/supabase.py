@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from dataclasses import asdict
+from ..usage import UsageEvent, CollectionBatch
 
 from ..models import SessionRecord
 
@@ -19,10 +21,11 @@ class SupabaseStore:
 
     name = "supabase"
 
-    def __init__(self, url: str, key: str, table: str = "token_sessions") -> None:
+    def __init__(self, url: str, key: str, table: str = "token_sessions", usage_table: str | None = None) -> None:
         self._url = url
         self._key = key
         self._table = table
+        self._usage_table = usage_table
         self._client_cache: Client | None = None
 
     @property
@@ -40,32 +43,40 @@ class SupabaseStore:
         """Upsert records into Supabase; returns the count submitted."""
         if not records:
             return 0
-        rows = [
-            {
-                "session_id": r.session_id,
-                "source": r.source,
-                "model": r.model,
-                "canonical_model": r.canonical_model,
-                "date": r.date,
-                "start_ts": r.start_ts,
-                "end_ts": r.end_ts,
-                "project": r.project,
-                "turns": r.turns,
-                "tool_calls": r.tool_calls,
-                "input_tokens": r.input_tokens,
-                "output_tokens": r.output_tokens,
-                "cache_creation_tokens": r.cache_creation_tokens,
-                "cache_read_tokens": r.cache_read_tokens,
-                "context_peak_tokens": r.context_peak_tokens,
-                "reasoning_tokens": r.reasoning_tokens,
-                "context": r.context,
-            }
-            for r in records
-        ]
+        rows = [asdict(r) for r in records]
         self._client.table(self._table).upsert(
             rows, on_conflict="session_id,source,model"
         ).execute()
         return len(records)
+
+    @property
+    def supports_usage_events(self) -> bool:
+        return bool(self._usage_table)
+
+    def upsert_session_batch(self, batch: CollectionBatch) -> int:
+        if not self.supports_usage_events:
+            return self.upsert(list(batch.sessions))
+        if not batch.sessions:
+            return 0
+        coverage = {(c.source,c.session_id): c for c in batch.coverage}
+        rows=[]
+        for record in batch.sessions:
+            row=asdict(record)
+            marker=coverage.get((record.source,record.session_id))
+            row['usage_coverage']=marker.status if marker else 'legacy'
+            row['usage_coverage_reason']=marker.reason if marker else None
+            rows.append(row)
+        self._client.table(self._table).upsert(rows,on_conflict='session_id,source,model').execute()
+        return len(rows)
+
+    def upsert_events(self, events: list[UsageEvent]) -> int:
+        if not self._usage_table:
+            raise ValueError('configure usage_table after applying the usage-events migration')
+        if not events:
+            return 0
+        self._client.table(self._usage_table).upsert([asdict(e) for e in events],
+            on_conflict='source,session_id,event_id').execute()
+        return len(events)
 
     def close(self) -> None:
         self._client_cache = None

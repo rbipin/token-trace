@@ -93,6 +93,8 @@ class CollectCommand:
         if len(stores) > 1:
             sync_result = run_sync(stores[0], stores[1:], dry_run=False)
             for store_name, info in sync_result.items():
+                if info.get("events_pushed"):
+                    print(f"Synced {info['events_pushed']} pending usage event(s) to {store_name}")
                 if info.get("pushed"):
                     print(f"Synced {info['pushed']} pending record(s) to {store_name}")
 

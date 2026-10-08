@@ -42,7 +42,7 @@ def test_sync_pushes_unsynced(tmp_path):
     from src.commands.common import run_sync
     result = run_sync(sqlite, [remote], dry_run=False)
 
-    assert result == {"supabase": {"pushed": 2, "failed": False}}
+    assert result == {"supabase": {"pushed": 2, "failed": False, "events_pushed": 0, "events_pending": 0}}
     assert len(remote.pushed) == 2
     assert sqlite.unsynced_for("supabase") == []
 
@@ -55,7 +55,7 @@ def test_sync_dry_run_does_not_push(tmp_path):
     from src.commands.common import run_sync
     result = run_sync(sqlite, [remote], dry_run=True)
 
-    assert result == {"supabase": {"pending": 1}}
+    assert result == {"supabase": {"pending": 1, "events_pending": 0}}
     assert remote.pushed == []
     assert len(sqlite.unsynced_for("supabase")) == 1
 

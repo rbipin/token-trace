@@ -39,11 +39,11 @@ class SyncCommand:
 
         for store_name, info in result.items():
             if args.dry_run:
-                print(f"  {store_name:<12} {info['pending']} pending")
+                print(f"  {store_name:<12} {info['pending']} records pending, {info.get('events_pending', 0)} usage events pending")
             elif info["failed"]:
                 unsynced = len(sqlite_store.unsynced_for(store_name))
-                print(f"  {store_name:<12} failed ({unsynced} records pending)")
+                print(f"  {store_name:<12} failed ({unsynced} records pending, {info.get('events_pending', 0)} usage events pending)")
             else:
-                print(f"  {store_name:<12} {info['pushed']} records pushed")
+                print(f"  {store_name:<12} {info['pushed']} records pushed, {info.get('events_pushed', 0)} usage events pushed")
 
         return 0
