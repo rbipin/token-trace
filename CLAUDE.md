@@ -2,6 +2,13 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Implementation workflow
+
+Always use the writing-plans skill for implementation plans and follow its usual
+test-first sequence: write a failing test, run it and verify the expected failure,
+implement the smallest change, run focused tests and verify they pass, then commit
+code and tests together. Update documentation after verified implementation.
+
 ## Commands
 
 ```bash
@@ -15,7 +22,7 @@ python3 -m pytest tests/test_claude_cli_collector.py -q
 python3 tracker.py collect --lookback 3
 
 # Report usage
-# Default: today's sessions, one row each (Project Source Model Start End Input Output Reasoning CacheRead CacheCreate CacheHit% CtxPeak Turns Tools)
+# Default: today's usage grouped by session/model, with lifetime metadata (Project Source Model Start End Input Output Reasoning CacheRead CacheCreate CacheHit% CtxPeak Turns Tools)
 python3 tracker.py report
 
 # --summary: compact session view (Session Project Date Start End Turns Tokens CacheHit%)
@@ -69,7 +76,7 @@ No build step — standard library only at runtime. Install `pytest` for testing
 
 ## Architecture
 
-The tracker follows an **Open/Closed pipeline**: adding a new data source only requires implementing the `ActivityCollector` protocol and registering it in `tracker.py`. No other module needs to change.
+The tracker follows an **Open/Closed pipeline**: adding a new data source only requires implementing the `ActivityCollector` protocol and registering it in `_build_pipeline()` in `src/commands/collect.py`. No other module needs to change.
 
 ```
 tracker.py               CLI entry point — builds argparse from the command registry and dispatches
@@ -85,6 +92,7 @@ src/
     sync.py              SyncCommand, using common.run_sync() for its push/retry logic
     common.py            load_remote_stores helper + run_sync(sqlite_store, remote_stores, dry_run) core push/retry logic, shared by collect and sync
   schedule.py             OS-native scheduling helpers: parse_time, resolve_executable, plus macOS (launchd) and Windows (Task Scheduler) schedule_*/unschedule_* functions
+  usage.py               Frozen UsageEvent, UsageCoverage, CollectionBatch; non-overlapping token accounting and local-day conversion
   models.py              SessionRecord frozen dataclass (has canonical_model field); merge_records deduplicates by (session_id, source, model)
   middleware/            Pluggable RecordMiddleware chain (Pipes-and-Filters), run in TrackerPipeline.run() after merge_records, before upsert
     base.py              RecordMiddleware Protocol: name, applies(records) -> bool, process(records) -> list[SessionRecord]
@@ -95,12 +103,14 @@ src/
   repo_identity.py       resolve_repo_slug(cwd): walks up to .git, parses origin remote from config -> owner/repo (read-only, cached, never raises)
   collectors/
     base.py              ActivityCollector protocol + to_date / to_local_iso helpers
+    codex_cli.py         Reads active/archive Codex rollouts; response accounting with cumulative-delta fallback and coverage diagnostics
     copilot_cli.py       Reads session-store.db + events.jsonl from ~/.copilot/; yields per-(session, model) records
     claude_cli.py        Reads ~/.claude/projects/**/*.jsonl; yields one record per JSONL (session)
   whimsy/                Standalone docker-style name generator (stdlib-only, extractable to its own repo; only public API is generate_name)
   stores/
     __init__.py          SessionStore Protocol (name attr + upsert + close)
     registry.py          load_store_registry() (entry-point discovery + built-in fallback), instantiate_store()
+    sqlite_usage.py      Additive event/coverage schema, atomic persistence, daily views, event acknowledgments
     sqlite.py            SqliteStore — local SQLite sink; sessions table, idempotent upsert, sync tracking
     supabase.py          SupabaseStore — remote sink; upserts into a Supabase token_sessions table
   store.py               Deprecated alias for SqliteStore (kept for backward compat)
@@ -109,7 +119,7 @@ src/
   report.py              UsageReporter: all/day/month/year periods, cache efficiency header, default detailed session view includes Reasoning, CtxPeak, and Tools columns, --summary, --by-project, --detailed (all rows + all columns + Synced from sync_log)
 ```
 
-**Data flow**: `Collector.collect(since)` → `List[SessionRecord]` → `merge_records` deduplicates → RecordMiddleware chain transforms (e.g. `ModelNormalizeMiddleware` sets `canonical_model`) → `UsageStore.upsert` writes SQLite → `UsageReporter.report` aggregates for display.
+**Legacy data flow**: `Collector.collect(since)` → `List[SessionRecord]` → `merge_records` deduplicates → RecordMiddleware chain transforms (e.g. `ModelNormalizeMiddleware` sets `canonical_model`) → `UsageStore.upsert` writes SQLite → `UsageReporter.report` aggregates for display.
 
 **Key invariants**:
 - `collect` is always idempotent — re-running overwrites existing session rows. Merge key is `(session_id, source, model)`.
@@ -150,9 +160,55 @@ table = "token_sessions"     # optional, this is the default
 
 **Claude CLI data details**: each conversation is a JSONL file under `~/.claude/projects/<project-id>/<conv-id>.jsonl`. The file stem is the `session_id`. Assistant messages contain `message.usage` with `input_tokens`, `output_tokens`, `cache_creation_input_tokens`, and `cache_read_input_tokens`. One `SessionRecord` per JSONL file. `tool_use` content blocks in assistant messages are counted into `tool_calls`. `context_peak_tokens` is the maximum per-message `input_tokens + cache_read_input_tokens + cache_creation_input_tokens + output_tokens` across all assistant messages. `reasoning_tokens` stays `0` (no source field in the JSONL).
 
-**No VS Code / Web / Desktop collectors**: those surfaces render token data only live and never persist it to disk. Do not add a collector for a surface unless it starts persisting token data to disk.
+**Persisted surfaces only**: Codex editor and CLI sessions are supported through their local rollout files. Web/desktop or other editor surfaces without persisted accounting are outside scope; do not invent a collector from live-only UI telemetry.
 
 **DB default**: `usage.db` next to `tracker.py` (override with `--db`). `Config.paths` uses `Path.home()` for cross-platform compatibility; tests inject synthetic `Paths` via `Config` to stay hermetic.
+
+## Codex ledger and reporting
+
+`Paths.codex_home` reads `CODEX_HOME` or defaults to `~/.codex`, with explicit
+injected paths taking precedence. `CodexCliCollector.collect_batch(since)` selects
+active/archive files by local mtime and parses their entire available histories.
+Its compatibility `collect()` still yields session summaries. Source identity is
+`codex_cli`, displayed as Codex. Preserve raw model names and metadata session IDs.
+
+`UsageEvent.key` is `(source, session_id, event_id)`; `SessionRecord.key` remains
+`(session_id, source, model)`. Batches commit summaries, events, and coverage in one
+transaction. Reimports preserve stored event dates and offsets. Event corrections
+invalidate acknowledgments; stale in-flight acknowledgments cannot hide a newer
+event correction. Summary token totals are reconciled from accepted persisted
+accounting, so a shortened reimport cannot erase previously recorded usage.
+
+`usage_daily` groups accepted events by source/session/raw model/local day.
+`reporting_usage` combines these with session-only legacy rows using an exclusive
+coverage-marker fallback. Response events supersede snapshot deltas, including
+previously imported snapshots. Explicit descendant metadata can make parent
+cumulative ownership ambiguous; those snapshots remain in the raw audit ledger
+but are excluded from reported totals, with partial coverage. Unknown ownership,
+malformed counts, missing usage, and truncated tails must produce visible
+partial/unavailable behavior rather than guessed dates, residuals, or totals.
+
+Dashboard and CLI period queries use `reporting_usage`. Count distinct
+`(source,session_id)` sessions, not daily/model rows. Reasoning is part of output;
+caches are separate from uncached input. Label lifetime session timestamps,
+request counts, and tool calls explicitly. Period tokens, cache rates, and request
+footprints use scoped accounting. `--detailed` remains a raw session diagnostic.
+Report and dashboard startup perform additive schema initialization for older
+session databases.
+
+`UsageEventStore.upsert_events()` is optional. `SupabaseStore.usage_table` enables
+it only after operators apply `docs/migrations/2026-10-08-usage-events.sql`.
+`run_sync()` retries sessions and events independently; `upsert_session_batch()`
+includes coverage metadata for event-aware remotes while preserving `upsert()` for
+session-only integrations. `coverage_for_sessions()` supplies those markers from
+SQLite. Remote daily consumers must mirror the local response-precedence and
+ambiguous-parent exclusion rules; raw audit event sums are not reporting totals.
+
+Use synthetic fixtures and temporary databases; never collect live user data or
+apply a remote migration as a test. Frontend render tests run with
+`cd frontend && node --test tests/usage.test.mjs`. Build validation can use
+`npm run build -- --outDir /private/tmp/tokentracer-frontend-build` to preserve
+CI-managed bundled static assets.
 
 ## Adding a new collector
 

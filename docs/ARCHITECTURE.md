@@ -20,7 +20,7 @@ extension points are included throughout.
 ## Overview
 
 TokenTracer is a local-first pipeline. **Collectors** read session artifacts
-that AI CLIs already write to disk, normalize them into `SessionRecord`s, and
+that supported CLI/editor surfaces already write to disk, normalize them into `SessionRecord`s, and
 a **pipeline** deduplicates them, runs them through an ordered **middleware**
 chain (e.g. model-name normalization), and writes them to **stores** (always
 a local SQLite database, optionally remote sinks such as Supabase). The
@@ -34,11 +34,13 @@ flowchart LR
     subgraph Sources["On-disk session data"]
         CP["~/.copilot/<br/>session-store.db + events.jsonl"]
         CL["~/.claude/projects/<br/>**/*.jsonl"]
+        CX["CODEX_HOME<br/>active/archive rollouts"]
     end
 
     subgraph Collectors["src/collectors/"]
         C1[CopilotCliCollector]
         C2[ClaudeCliCollector]
+        C3[CodexCliCollector]
     end
 
     PR["ProjectNameResolver<br/>src/project_identity.py"]
@@ -55,6 +57,10 @@ flowchart LR
 
     CP --> C1
     CL --> C2
+    CX --> C3
+    C3 --> PR
+    PR --> C3
+    C3 --> P
     C1 --> PR
     C2 --> PR
     PR --> PI
@@ -72,6 +78,8 @@ flowchart LR
 | --- | --- |
 | `tracker.py` | CLI entry point: builds argparse from the command registry and dispatches |
 | `src/commands/` | `Command` protocol + static `COMMANDS` registry; one module per subcommand (`collect`, `report`, `config`, `projects`, `sync`) |
+| `src/usage.py` | Frozen usage events, coverage and collection batches; token/time normalization |
+| `src/stores/sqlite_usage.py` | Atomic ledger persistence, additive migration and daily reporting views |
 | `src/models.py` | `SessionRecord` frozen dataclass; `merge_records` dedupe |
 | `src/collectors/` | Read-only source adapters (`ActivityCollector` protocol) |
 | `src/pipeline.py` | Fluent `TrackerPipeline`; parallel collection, middleware chain, fan-out to stores |
@@ -85,6 +93,67 @@ flowchart LR
 | `src/whimsy/` | Standalone stdlib-only `generate_name()` package for masked project names |
 
 ---
+
+## Codex daily accounting
+
+Codex uses the optional `BatchActivityCollector.collect_batch(since)` capability.
+`Paths.codex_home` defaults to `~/.codex`, respects `CODEX_HOME`, and permits
+explicit injection. `src/collectors/codex_cli.py` discovers nested active and
+archived JSONL rollouts by recent local mtime, then reads their complete available
+histories in streaming passes. Metadata session IDs survive archive moves and
+renaming. Projects use the existing resolver, and raw paths/conversation content
+never enter batches or sync payloads.
+
+The pipeline wraps session-only collectors in `CollectionBatch`, merges sessions
+by their existing raw key, deduplicates events by `(source,session_id,event_id)`,
+stamps context on both, and invokes optional `process_events()` middleware.
+SQLite receives one atomic batch; session-only primary stores retain summaries
+with an explicit unsupported-event notice. Ordinary remote retries use the same
+`run_sync()` path as the post-collect sweep.
+
+Per-response `token_usage_record` counts take precedence. Older cumulative
+snapshots yield component deltas only with a defensible baseline; repeated
+snapshots contribute nothing. Missing/null accounting does not fabricate a zero
+request. Decreases without an explicit fresh-accounting marker and uncertain
+inherited history are partial. Explicit thread IDs exclude copied fork history.
+When known descendants make a parent's cumulative ownership uncertain, parent
+snapshots are retained for audit but excluded from accepted reports. Supported
+child response records remain attributable to their originating session.
+
+| Relation | Identity / purpose |
+|---|---|
+| `sessions` | Lifetime metadata and accepted totals, keyed by `(session_id,source,model)` |
+| `usage_events` | Raw immutable accounting identities `(source,session_id,event_id)`; corrected values are upserted |
+| `usage_coverage` | Session status `measured`, `partial`, or `unavailable`; absent marker means legacy |
+| `usage_event_sync_log` | Independent acknowledgment per event and remote store |
+| `usage_daily` | Accepted per-model local-day usage; lifetime metadata retained separately |
+| `reporting_usage` | Daily ledger rows plus exclusively uncovered legacy sessions |
+
+Events persist UTC timestamps and local dates/historical offsets. Existing event
+dates and offsets survive timezone changes. Caches are removed from inclusive
+input and stored separately; reasoning remains a subset of output. Footprint is
+a single request's inclusive input plus output. Corrections clear affected event
+acknowledgments; acknowledgments compare revisions so an in-flight stale push
+cannot hide a correction. Coverage changes also invalidate session sync markers.
+Atomic rollback protects all three batch relations.
+
+All dashboard usage surfaces and CLI period rollups use `reporting_usage`.
+Session views regroup scoped daily rows by raw session/model identity and label
+lifetime timestamps/activity. Distinct source/session counts avoid inflation
+across models and days; cache efficiency is period-scoped. Attribution metadata
+exposes legacy tokens plus partial/unavailable-session counts, including sessions
+without reportable events. `--detailed` is a raw session diagnostic. Entry points
+prepare additive local schema before reading older databases.
+
+Remote event support is optional and explicitly enabled by `usage_table` after
+operators apply `docs/migrations/2026-10-08-usage-events.sql` (adapt default table
+names if configured otherwise). Session and event retries/acknowledgments are
+independent per store, and dry-run reports both counts without remote writes.
+Event-aware session batches carry `usage_coverage` and `usage_coverage_reason`.
+Remote consumers must exclude covered legacy summaries, prefer response events
+over snapshots within each session, and omit snapshot deltas with reason
+`ambiguous descendant cumulative usage ownership`. Summing the raw audit table
+would reintroduce superseded or ambiguously owned usage.
 
 ## Collect flow
 
@@ -475,7 +544,7 @@ keeps the package extractable into its own repository later.
   empty if never synced). Overrides `--summary` and `--by-project`; ignores
   `--period`; `--model` filter still applies; works with `--json`.
 - **Cache hit %** = cache reads as a share of total input-side tokens; a
-  header line reports overall cache efficiency (cache reads cost ~10% of
+  header line reports cache efficiency for the selected period and models (cache reads cost ~10% of
   regular input tokens).
 - `--model <name>` filters, `--json` emits machine-readable output.
 - **Grouping and filtering use `COALESCE(canonical_model, model)`** — every

@@ -5,12 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "tokentracer"
 version = "1.0.6"
-description = "Local token usage tracker for AI CLI tools (Claude Code, GitHub Copilot)"
+description = "Local token usage tracker for AI tools (Claude Code, GitHub Copilot, Codex)"
 readme = "README.md"
 license = "LicenseRef-PolyForm-Shield-1.0.0"
 license-files = ["LICENSE.md"]
 requires-python = ">=3.11"
-keywords = ["claude", "copilot", "tokens", "ai", "usage", "tracker"]
+keywords = ["claude", "copilot", "codex", "tokens", "ai", "usage", "tracker"]
 
 [project.scripts]
 tokentracer = "tracker:main"
