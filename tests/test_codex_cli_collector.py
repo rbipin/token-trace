@@ -300,3 +300,62 @@ def test_conversation_items_are_streamed_and_never_enter_batch(tmp_path):
     assert len(batch.events) == 1
     assert batch.sessions[0].input_tokens == 100
     assert 'private text' not in repr(batch)
+
+
+def test_parent_cumulative_and_child_responses_never_double_count(tmp_path):
+    root=metadata('parent')
+    write_rollout(tmp_path,[root,context(),snapshot(0),snapshot(150)],'parent.jsonl')
+    child=metadata('child')
+    child['payload']['source']={'subagent':{'parent_thread_id':'parent'}}
+    own=usage_row('r-child','2026-10-08T12:01:00Z',50)
+    own['payload'].update(session_id='child',thread_id='child')
+    write_rollout(tmp_path,[child,context(),own],'child.jsonl')
+    batch=collect(tmp_path)
+    assert sum(e.input_tokens for e in batch.events) == 50
+    assert next(c for c in batch.coverage if c.session_id=='parent').status == 'partial'
+    assert any('descendant' in d for d in batch.diagnostics)
+    assert next(r for r in batch.sessions if r.session_id=='parent').input_tokens == 0
+
+
+@pytest.mark.parametrize('kind',['function_call','custom_tool_call'])
+def test_all_tool_formats_deduplicate_call_ids(tmp_path,kind):
+    tool=dict(type='response_item',payload=dict(type=kind,call_id='c1'))
+    write_rollout(tmp_path,[metadata(),context(),tool,tool,usage_row('r1','2026-10-08T12:01:00Z',100)])
+    assert collect(tmp_path).sessions[0].tool_calls == 1
+
+
+def test_clearing_into_new_session_keeps_both_identities(tmp_path):
+    write_rollout(tmp_path,[metadata(),context(),usage_row('r1','2026-10-08T12:01:00Z',100)],'first.jsonl')
+    row=usage_row('r2','2026-10-08T12:02:00Z',50)
+    row['payload'].update(thread_id='new',session_id='new')
+    write_rollout(tmp_path,[metadata('new'),context(),row],'second.jsonl')
+    batch=collect(tmp_path)
+    assert {r.session_id for r in batch.sessions} == {'s1','new'}
+    assert sum(e.input_tokens for e in batch.events) == 150
+
+
+def test_cache_categories_and_request_footprint_are_non_overlapping(tmp_path):
+    row=usage_row('r1','2026-10-08T12:01:00Z',1000)
+    row['payload']['usage'].update(cached_input_tokens=600,cache_write_input_tokens=100,output_tokens=200,reasoning_output_tokens=80)
+    write_rollout(tmp_path,[metadata(),context(),row])
+    record=collect(tmp_path).sessions[0]
+    assert (record.input_tokens,record.cache_read_tokens,record.cache_creation_tokens,record.output_tokens,record.reasoning_tokens) == (300,600,100,200,80)
+    assert record.context_peak_tokens == 1200
+
+
+def test_later_descendant_discovery_retains_raw_history_but_excludes_ambiguous_totals(tmp_path):
+    import sqlite3
+    from src.stores.sqlite import SqliteStore
+    store=SqliteStore(tmp_path/'usage.db')
+    write_rollout(tmp_path,[metadata('parent'),context(),snapshot(0),snapshot(150)],'parent.jsonl')
+    store.upsert_batch(collect(tmp_path))
+    child=metadata('child')
+    child['payload']['source']={'subagent':{'parent_thread_id':'parent'}}
+    own=usage_row('child-r','2026-10-08T12:01:00Z',50)
+    own['payload'].update(session_id='child',thread_id='child')
+    write_rollout(tmp_path,[child,context(),own],'child.jsonl')
+    store.upsert_batch(collect(tmp_path))
+    with sqlite3.connect(tmp_path/'usage.db') as conn:
+        assert conn.execute('SELECT SUM(input_tokens) FROM reporting_usage').fetchone()[0] == 50
+        assert conn.execute('SELECT SUM(input_tokens) FROM sessions').fetchone()[0] == 50
+        assert conn.execute('SELECT SUM(input_tokens) FROM usage_events').fetchone()[0] == 200

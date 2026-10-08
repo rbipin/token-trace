@@ -106,3 +106,33 @@ def test_coverage_correction_invalidates_session_ack(tmp_path):
     assert store.unsynced_for('remote') == []
     store.upsert_batch(replace(batch,coverage=(UsageCoverage('codex_cli','s1','partial','missing history'),)))
     assert len(store.unsynced_for('remote')) == 1
+
+
+def test_response_records_supersede_previously_imported_snapshots(tmp_path):
+    path=tmp_path/'usage.db'
+    store=SqliteStore(path)
+    rec=SessionRecord('s1','codex_cli',model='gpt-5.3-codex',date='2026-10-08')
+    old=replace(event(eid='snapshot:old'),attribution='snapshot_delta',response_id=None)
+    store.upsert_batch(CollectionBatch((rec,),(old,)))
+    store.upsert_batch(CollectionBatch((rec,),(event(eid='response:r1'),)))
+    with sqlite3.connect(path) as conn:
+        assert conn.execute('SELECT SUM(input_tokens) FROM reporting_usage').fetchone()[0] == 100
+        assert conn.execute('SELECT input_tokens FROM sessions').fetchone()[0] == 100
+        assert conn.execute('SELECT COUNT(*) FROM usage_events').fetchone()[0] == 2
+
+
+def test_events_without_matching_summary_roll_back_batch(tmp_path):
+    store=SqliteStore(tmp_path/'usage.db')
+    with pytest.raises(ValueError,match='summary'):
+        store.upsert_batch(CollectionBatch(events=(event(),)))
+    assert store.unsynced_events_for('remote') == []
+
+
+def test_acknowledging_stale_event_does_not_hide_correction(tmp_path):
+    store=SqliteStore(tmp_path/'usage.db')
+    rec=SessionRecord('s1','codex_cli',model='gpt-5.3-codex',date='2026-10-08')
+    store.upsert_batch(CollectionBatch((rec,),(event(),)))
+    sent=store.unsynced_events_for('remote')
+    store.upsert_batch(CollectionBatch((rec,),(replace(event(),input_tokens=120),)))
+    store.mark_events_synced(sent,'remote')
+    assert store.unsynced_events_for('remote')[0].input_tokens == 120

@@ -192,7 +192,7 @@ def attribution(conn: sqlite3.Connection, where: str, params: list) -> dict:
         SELECT source,session_id,coverage FROM (
             SELECT s.session_id,s.source,s.model,s.canonical_model,s.date,s.project,s.context,c.status AS coverage
             FROM sessions s JOIN usage_coverage c ON c.source=s.source AND c.session_id=s.session_id
-            WHERE NOT EXISTS (SELECT 1 FROM usage_events e WHERE e.source=s.source AND e.session_id=s.session_id)
+            WHERE NOT EXISTS (SELECT 1 FROM reporting_usage e WHERE e.source=s.source AND e.session_id=s.session_id)
         ) WHERE {where}
     """,params+params).fetchall()
     statuses={(r['source'],r['session_id']):r['coverage'] for r in rows}

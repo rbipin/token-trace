@@ -128,3 +128,27 @@ def test_report_initializes_additive_schema_for_pre_feature_database(tmp_path):
     payload=json.loads(UsageReporter(path).report(period='all',as_json=True))
     assert payload['rows'][0]['input_tokens'] == 20
     assert payload['attribution']['legacy_tokens'] == 20
+
+
+@pytest.mark.parametrize('period,want',[('day',50),('month',50),('year',50),('all',150)])
+def test_cli_calendar_periods_scope_event_tokens(tmp_path,period,want):
+    today=date.today()
+    old=date(today.year-1,1,1).isoformat()
+    path=tmp_path/'usage.db'
+    store=SqliteStore(path)
+    rec=SessionRecord('s1','codex_cli',model='gpt-5.3-codex',date=old)
+    store.upsert_batch(CollectionBatch((rec,),(event(day=old),event(eid='r2',day=today.isoformat(),tokens=50))))
+    payload=json.loads(UsageReporter(path).report(period=period,summary=True,as_json=True))
+    assert sum(r.get('input_tokens',r.get('total_tokens',0)) for r in payload['rows']) == want
+
+
+def test_cli_model_filter_uses_canonical_event_metadata(tmp_path):
+    path=tmp_path/'usage.db'
+    store=SqliteStore(path)
+    rec=SessionRecord('s1','codex_cli',model='raw',canonical_model='canonical',date=date.today().isoformat())
+    e=replace(event(day=date.today().isoformat()),model='raw',canonical_model='canonical')
+    store.upsert_batch(CollectionBatch((rec,),(e,)))
+    payload=json.loads(UsageReporter(path).report(period='all',models=['canonical'],as_json=True))
+    assert payload['rows'][0]['model'] == 'canonical'
+    assert payload['rows'][0]['input_tokens'] == 100
+    assert json.loads(UsageReporter(path).report(period='all',models=['other'],as_json=True))['rows'] == []

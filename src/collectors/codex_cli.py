@@ -11,7 +11,7 @@ from typing import Iterator
 from ..model_normalize import normalize_model
 from ..models import SessionRecord
 from ..repo_identity import resolve_repo_slug
-from ..usage import CollectionBatch, UsageCoverage, UsageEvent, event_time, normalize_usage
+from ..usage import AMBIGUOUS_DESCENDANT_USAGE, CollectionBatch, UsageCoverage, UsageEvent, event_time, normalize_usage
 
 
 class CodexCliCollector:
@@ -27,6 +27,7 @@ class CodexCliCollector:
 
     def collect_batch(self, since: date) -> CollectionBatch:
         events, summaries, coverages, diagnostics = {}, {}, {}, []
+        parents = {}
         for directory in (self._home/'sessions', self._home/'archived_sessions'):
             try:
                 paths = sorted(directory.rglob('*.jsonl')) if directory.exists() else []
@@ -37,7 +38,7 @@ class CodexCliCollector:
                 try:
                     if datetime.fromtimestamp(path.stat().st_mtime).astimezone(self._tz).date() < since:
                         continue
-                    batch = self._parse(path)
+                    batch = self._parse(path, parents)
                 except OSError:
                     diagnostics.append('codex_cli: cannot read rollout; other sessions continue')
                     continue
@@ -51,6 +52,15 @@ class CodexCliCollector:
                     previous=coverages.get(key)
                     if previous is None or {'unavailable':0,'partial':1,'measured':2}[coverage.status] > {'unavailable':0,'partial':1,'measured':2}[previous.status]:
                         coverages[key]=coverage
+        for parent in set(parents.values()):
+            if any(e.session_id==parent and e.attribution=='snapshot_delta' for e in events.values()):
+                events={key:e for key,e in events.items() if not (e.session_id==parent and e.attribution=='snapshot_delta')}
+                coverages[(self.source,parent)]=UsageCoverage(self.source,parent,'partial',AMBIGUOUS_DESCENDANT_USAGE)
+                diagnostics.append(f'codex_cli [{parent}]: {AMBIGUOUS_DESCENDANT_USAGE}')
+                for key,rec in list(summaries.items()):
+                    if rec.session_id==parent:
+                        summaries[key]=replace(rec,input_tokens=0,output_tokens=0,cache_read_tokens=0,
+                            cache_creation_tokens=0,reasoning_tokens=0,turns=0,context_peak_tokens=0)
         # Active/archive duplicate copies may differ in completeness; totals are from the deduplicated events.
         for key,rec in list(summaries.items()):
             owned=[e for e in events.values() if (e.session_id,e.source,e.model)==key]
@@ -72,7 +82,7 @@ class CodexCliCollector:
                 except (ValueError, UnicodeError):
                     issue('incomplete trailing entry; retry on next collection' if not line.endswith('\n') else 'malformed rollout entry')
 
-    def _parse(self, path: Path) -> CollectionBatch:
+    def _parse(self, path: Path, parents: dict | None = None) -> CollectionBatch:
         issues=[]
         def issue(reason):
             if reason not in issues and len(issues)<8:
@@ -108,6 +118,10 @@ class CodexCliCollector:
             return CollectionBatch(diagnostics=('codex_cli: invalid session identity or timestamp',))
         source=meta.get('source')
         descendant=isinstance(source,dict) and 'subagent' in source
+        if descendant and parents is not None:
+            details=source.get('subagent')
+            if isinstance(details,dict) and isinstance(details.get('parent_thread_id'),str):
+                parents[sid]=details['parent_thread_id']
         fork=bool(meta.get('forked_from_id') or meta.get('parent_thread_id') or descendant)
         cwd=meta.get('cwd')
         project=None

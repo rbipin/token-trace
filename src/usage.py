@@ -6,6 +6,8 @@ from datetime import datetime, tzinfo
 from typing import Literal
 from .models import SessionRecord
 
+AMBIGUOUS_DESCENDANT_USAGE = "ambiguous descendant cumulative usage ownership"
+
 @dataclass(frozen=True)
 class UsageEvent:
     session_id: str

@@ -48,7 +48,7 @@ def test_identity_rows_do_not_enter_sync_payloads(tmp_path):
 
     result = run_sync(sqlite, [remote], dry_run=False)
 
-    assert result == {"supabase": {"pushed": 1, "failed": False}}
+    assert result == {"supabase": {"pushed": 1, "failed": False, "events_pushed": 0, "events_pending": 0}}
     assert remote.pushed == [seeded]
     assert remote.pushed[0].project == "visible-project"
     assert all(
