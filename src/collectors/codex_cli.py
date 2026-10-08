@@ -53,7 +53,7 @@ class CodexCliCollector:
                     if previous is None or {'unavailable':0,'partial':1,'measured':2}[coverage.status] > {'unavailable':0,'partial':1,'measured':2}[previous.status]:
                         coverages[key]=coverage
         for parent in set(parents.values()):
-            if any(e.session_id==parent and e.attribution=='snapshot_delta' for e in events.values()):
+            if not any(e.session_id==parent and e.attribution=='response' for e in events.values()):
                 events={key:e for key,e in events.items() if not (e.session_id==parent and e.attribution=='snapshot_delta')}
                 coverages[(self.source,parent)]=UsageCoverage(self.source,parent,'partial',AMBIGUOUS_DESCENDANT_USAGE)
                 diagnostics.append(f'codex_cli [{parent}]: {AMBIGUOUS_DESCENDANT_USAGE}')
@@ -70,17 +70,17 @@ class CodexCliCollector:
                                tuple(coverages.values()),tuple(dict.fromkeys(diagnostics)))
 
     def _rows(self, path: Path, issue):
-        with path.open(encoding='utf-8') as stream:
+        with path.open('rb') as stream:
             for line in stream:
                 if not line.strip():
                     continue
                 try:
-                    row=json.loads(line)
+                    row=json.loads(line.decode('utf-8'))
                     if not isinstance(row,dict):
                         raise ValueError('non-object entry')
                     yield row
                 except (ValueError, UnicodeError):
-                    issue('incomplete trailing entry; retry on next collection' if not line.endswith('\n') else 'malformed rollout entry')
+                    issue('incomplete trailing entry; retry on next collection' if not line.endswith(b'\n') else 'malformed rollout entry')
 
     def _parse(self, path: Path, parents: dict | None = None) -> CollectionBatch:
         issues=[]

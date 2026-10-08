@@ -359,3 +359,41 @@ def test_later_descendant_discovery_retains_raw_history_but_excludes_ambiguous_t
         assert conn.execute('SELECT SUM(input_tokens) FROM reporting_usage').fetchone()[0] == 50
         assert conn.execute('SELECT SUM(input_tokens) FROM sessions').fetchone()[0] == 50
         assert conn.execute('SELECT SUM(input_tokens) FROM usage_events').fetchone()[0] == 200
+
+
+def test_late_child_excludes_persisted_parent_outside_lookback(tmp_path):
+    import os
+    import sqlite3
+    from src.stores.sqlite import SqliteStore
+    parent = write_rollout(tmp_path, [metadata(), context(), snapshot(0,0), snapshot(150)], 'parent.jsonl')
+    collector = CodexCliCollector(tmp_path)
+    store = SqliteStore(tmp_path/'usage.db')
+    store.upsert_batch(collector.collect_batch(date(2026,10,8)))
+    os.utime(parent, (0,0))
+    child = usage_row('child-response','2026-10-08T12:03:00Z',50)
+    child['payload'].update(session_id='child',thread_id='child')
+    child_meta=metadata('child')
+    child_meta['payload']['source']={'subagent':{'parent_thread_id':'s1'}}
+    write_rollout(tmp_path,[child_meta,context(),child], 'child.jsonl')
+    store.upsert_batch(collector.collect_batch(date(2026,10,8)))
+    with sqlite3.connect(tmp_path/'usage.db') as conn:
+        assert conn.execute('SELECT SUM(input_tokens) FROM reporting_usage').fetchone()[0] == 50
+        assert conn.execute("SELECT status FROM usage_coverage WHERE session_id='s1'").fetchone()[0] == 'partial'
+
+
+def test_incomplete_utf8_tail_preserves_other_files_and_retries(tmp_path):
+    write_rollout(tmp_path,[metadata(),context(),usage_row('r1','2026-10-08T12:01:00Z',100)],'a-valid.jsonl')
+    own=usage_row('r2','2026-10-08T12:02:00Z',50)
+    own['payload'].update(session_id='other',thread_id='other',label='é')
+    path=write_rollout(tmp_path,[metadata('other'),context()],'b-tail.jsonl')
+    raw=(json.dumps(own,ensure_ascii=False)+'\n').encode('utf-8')
+    split=raw.index('é'.encode('utf-8'))+1
+    with path.open('ab') as stream: stream.write(raw[:split])
+    collector=CodexCliCollector(tmp_path)
+    before=collector.collect_batch(date(2026,10,8))
+    assert sum(e.input_tokens for e in before.events) == 100
+    assert any('retry' in d for d in before.diagnostics)
+    with path.open('ab') as stream: stream.write(raw[split:])
+    after=collector.collect_batch(date(2026,10,8))
+    assert sum(e.input_tokens for e in after.events) == 150
+    assert not after.diagnostics

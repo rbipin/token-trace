@@ -139,3 +139,33 @@ def test_sync_cli_reports_pending_events(tmp_path,monkeypatch,capsys):
     args=tracker.build_parser().parse_args(['--db',str(cfg.db_path),'sync','--dry-run'])
     assert args.run(args) == 0
     assert '1 usage events pending' in capsys.readouterr().out
+
+
+def test_inflight_coverage_correction_remains_pending(tmp_path):
+    store,rec=seeded(tmp_path)
+    class CoverageRemote(Remote):
+        def upsert_session_batch(self,batch):
+            self.sent=batch
+            store.upsert_batch(CollectionBatch(coverage=(UsageCoverage('codex_cli','s1','partial','late discovery'),)))
+    remote=CoverageRemote()
+    run_sync(store,[remote],False)
+    assert remote.sent.coverage[0].status == 'measured'
+    assert len(store.unsynced_for('remote')) == 1
+
+
+def test_enabling_event_sync_backfills_coverage_once(tmp_path):
+    store,_=seeded(tmp_path)
+    class CoverageRemote(Remote):
+        supports_usage_events=False
+        batches=[]
+        def upsert_session_batch(self,batch):
+            self.batches.append(batch)
+    remote=CoverageRemote()
+    run_sync(store,[remote],False)
+    assert store.unsynced_for('remote') == []
+    remote.supports_usage_events=True
+    run_sync(store,[remote],False)
+    assert len(remote.batches) == 1
+    assert remote.batches[0].coverage[0].status == 'measured'
+    run_sync(store,[remote],False)
+    assert len(remote.batches) == 1

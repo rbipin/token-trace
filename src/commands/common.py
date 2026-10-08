@@ -30,7 +30,10 @@ def run_sync(
     from src.usage import CollectionBatch
     result = {}
     for store in remote_stores:
-        pending = sqlite_store.unsynced_for(store.name)
+        capable = callable(getattr(store,'upsert_events',None)) and getattr(store,'supports_usage_events',True)
+        sends_coverage = capable and callable(getattr(store,'upsert_session_batch',None))
+        pending_method = getattr(sqlite_store,'unsynced_with_coverage_for',None) if sends_coverage else None
+        pending = pending_method(store.name) if callable(pending_method) else sqlite_store.unsynced_for(store.name)
         events = sqlite_store.unsynced_events_for(store.name) if callable(getattr(sqlite_store,'unsynced_events_for',None)) else []
         info = {'pending':len(pending),'events_pending':len(events)} if dry_run else {
             'pushed':0,'failed':False,'events_pushed':0,'events_pending':len(events)}
@@ -38,12 +41,12 @@ def run_sync(
         try:
             if dry_run:
                 continue
-            capable = callable(getattr(store,'upsert_events',None)) and getattr(store,'supports_usage_events',True)
             if pending:
                 try:
-                    if capable and callable(getattr(store,'upsert_session_batch',None)):
+                    if sends_coverage:
                         coverage = sqlite_store.coverage_for_sessions(pending) if callable(getattr(sqlite_store,'coverage_for_sessions',None)) else ()
-                        store.upsert_session_batch(CollectionBatch(tuple(pending),coverage=coverage))
+                        sent_batch=CollectionBatch(tuple(pending),coverage=coverage)
+                        store.upsert_session_batch(sent_batch)
                     else:
                         store.upsert(pending)
                     info['pushed']=len(pending)
@@ -52,7 +55,10 @@ def run_sync(
                     print(f'Warning [{store.name}]: {exc}',file=sys.stderr)
                 else:
                     try:
-                        sqlite_store.mark_synced(pending,store.name)
+                        if sends_coverage and callable(getattr(sqlite_store,'mark_session_batch_synced',None)):
+                            sqlite_store.mark_session_batch_synced(sent_batch,store.name)
+                        else:
+                            sqlite_store.mark_synced(pending,store.name)
                     except Exception as exc:
                         print(f'Warning [sync_log:{store.name}]: {exc}',file=sys.stderr)
             if events:

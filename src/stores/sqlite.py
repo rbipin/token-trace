@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import asdict
 import sys
 from contextlib import closing
 from pathlib import Path
@@ -188,7 +189,7 @@ class SqliteStore:
         # so there's nothing to do here, but we implement the protocol.
         pass
 
-    def unsynced_for(self, store_name: str) -> list[SessionRecord]:
+    def unsynced_for(self, store_name: str, include_coverage: bool = False) -> list[SessionRecord]:
         """Return all records not yet synced to the given store."""
         _UNSYNCED = """
         SELECT s.session_id, s.source, s.model, s.canonical_model, s.date,
@@ -204,8 +205,15 @@ class SqliteStore:
             AND l.store_name = ?
         WHERE l.session_id IS NULL
         """
+        if include_coverage:
+            _UNSYNCED += """ OR NOT EXISTS (
+                SELECT 1 FROM usage_coverage_sync_log a
+                LEFT JOIN usage_coverage c ON c.source=a.source AND c.session_id=a.session_id
+                WHERE a.source=s.source AND a.session_id=s.session_id AND a.model=s.model
+                    AND a.store_name=? AND a.status=COALESCE(c.status,'legacy') AND a.reason IS c.reason)
+            """
         with closing(self._connect()) as conn:
-            rows = conn.execute(_UNSYNCED, (store_name,)).fetchall()
+            rows = conn.execute(_UNSYNCED, (store_name,store_name) if include_coverage else (store_name,)).fetchall()
         return [
             SessionRecord(
                 session_id=row[0], source=row[1], model=row[2], canonical_model=row[3],
@@ -218,6 +226,29 @@ class SqliteStore:
             )
             for row in rows
         ]
+
+    def unsynced_with_coverage_for(self, store_name: str) -> list[SessionRecord]:
+        return self.unsynced_for(store_name, include_coverage=True)
+
+    def mark_session_batch_synced(self, batch: CollectionBatch, store_name: str) -> None:
+        """Acknowledge only the exact session and coverage revision sent."""
+        expected={(c.source,c.session_id):(c.status,c.reason) for c in batch.coverage}
+        with closing(self._connect()) as conn, conn:
+            conn.execute('BEGIN IMMEDIATE')
+            for record in batch.sessions:
+                values=asdict(record)
+                current=conn.execute('SELECT '+','.join(values)+' FROM sessions '
+                    'WHERE session_id=? AND source=? AND model=?',record.key).fetchone()
+                coverage=conn.execute('SELECT status,reason FROM usage_coverage WHERE source=? AND session_id=?',
+                    (record.source,record.session_id)).fetchone()
+                revision=tuple(coverage) if coverage else ('legacy',None)
+                if current is None or tuple(current)!=tuple(values.values()) or revision!=expected.get(
+                        (record.source,record.session_id),('legacy',None)):
+                    continue
+                conn.execute("INSERT OR IGNORE INTO sync_log VALUES (?,?,?,?,datetime('now'))",
+                    (*record.key,store_name))
+                conn.execute('INSERT OR REPLACE INTO usage_coverage_sync_log VALUES (?,?,?,?,?,?)',
+                    (record.source,record.session_id,record.model,store_name,*revision))
 
     def record_run(self, timestamp: str | None = None) -> None:
         """Record that `collect` executed, upserting the single run_log row."""

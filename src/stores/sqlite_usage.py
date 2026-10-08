@@ -33,6 +33,10 @@ def migrate(conn: sqlite3.Connection) -> None:
         source TEXT NOT NULL, session_id TEXT NOT NULL, event_id TEXT NOT NULL,
         store_name TEXT NOT NULL, synced_at TEXT NOT NULL,
         PRIMARY KEY(source,session_id,event_id,store_name))''')
+    conn.execute('''CREATE TABLE IF NOT EXISTS usage_coverage_sync_log (
+        source TEXT NOT NULL, session_id TEXT NOT NULL, model TEXT NOT NULL,
+        store_name TEXT NOT NULL, status TEXT NOT NULL, reason TEXT,
+        PRIMARY KEY(source,session_id,model,store_name))''')
     conn.execute('CREATE INDEX IF NOT EXISTS usage_events_date ON usage_events(date)')
     conn.execute('CREATE INDEX IF NOT EXISTS usage_events_session ON usage_events(source,session_id,model)')
     conn.execute(f'''CREATE VIEW IF NOT EXISTS usage_daily AS
@@ -101,6 +105,9 @@ def persist(conn: sqlite3.Connection, batch: CollectionBatch) -> None:
         if key not in coverage and not conn.execute('SELECT 1 FROM usage_coverage WHERE source=? AND session_id=?',key).fetchone():
             coverage[key]=UsageCoverage(*key,'measured')
     for key,c in coverage.items():
+        if c.reason==AMBIGUOUS_DESCENDANT_USAGE and conn.execute(
+                "SELECT 1 FROM usage_events WHERE source=? AND session_id=? AND attribution='response' LIMIT 1",key).fetchone():
+            continue
         existing=conn.execute('SELECT status,reason FROM usage_coverage WHERE source=? AND session_id=?',key).fetchone()
         if existing is not None and existing[1]==AMBIGUOUS_DESCENDANT_USAGE and not conn.execute(
                 "SELECT 1 FROM usage_events WHERE source=? AND session_id=? AND attribution='response' LIMIT 1",key).fetchone():
