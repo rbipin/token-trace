@@ -7,6 +7,8 @@ from contextlib import closing
 from pathlib import Path
 
 from ..models import SessionRecord
+from ..usage import CollectionBatch, UsageEvent
+from . import sqlite_usage
 from . import SessionStore
 
 _CREATE_SESSIONS = """
@@ -110,6 +112,7 @@ class SqliteStore:
                 conn.execute(
                     "ALTER TABLE sessions ADD COLUMN canonical_model TEXT"
                 )
+            sqlite_usage.migrate(conn)
             conn.commit()
 
     def upsert(self, records: list[SessionRecord]) -> int:
@@ -125,33 +128,50 @@ class SqliteStore:
         Returns:
             Count of records upserted.
         """
-        if not records:
-            return 0
         with closing(self._connect()) as conn, conn:
-            for r in records:
-                new_row = (
-                    r.model, r.canonical_model, r.date, r.start_ts, r.end_ts, r.project,
-                    r.turns, r.tool_calls, r.input_tokens, r.output_tokens,
-                    r.cache_creation_tokens, r.cache_read_tokens,
-                    r.context_peak_tokens, r.reasoning_tokens, r.context,
-                )
-                existing = conn.execute(
-                    """
-                    SELECT model, canonical_model, date, start_ts, end_ts, project,
-                           turns, tool_calls, input_tokens, output_tokens,
-                           cache_creation_tokens, cache_read_tokens,
-                           context_peak_tokens, reasoning_tokens, context
-                    FROM sessions WHERE session_id = ? AND source = ? AND model = ?
-                    """,
+            return self._upsert_sessions(conn, records)
+
+    @staticmethod
+    def _upsert_sessions(conn, records) -> int:
+        for r in records:
+            new_row = (
+                r.model, r.canonical_model, r.date, r.start_ts, r.end_ts, r.project,
+                r.turns, r.tool_calls, r.input_tokens, r.output_tokens,
+                r.cache_creation_tokens, r.cache_read_tokens,
+                r.context_peak_tokens, r.reasoning_tokens, r.context,
+            )
+            existing = conn.execute(
+                """
+                SELECT model, canonical_model, date, start_ts, end_ts, project,
+                       turns, tool_calls, input_tokens, output_tokens,
+                       cache_creation_tokens, cache_read_tokens,
+                       context_peak_tokens, reasoning_tokens, context
+                FROM sessions WHERE session_id = ? AND source = ? AND model = ?
+                """,
+                (r.session_id, r.source, r.model),
+            ).fetchone()
+            if existing is not None and tuple(existing) != new_row:
+                conn.execute(
+                    "DELETE FROM sync_log WHERE session_id = ? AND source = ? AND model = ?",
                     (r.session_id, r.source, r.model),
-                ).fetchone()
-                if existing is not None and tuple(existing) != new_row:
-                    conn.execute(
-                        "DELETE FROM sync_log WHERE session_id = ? AND source = ? AND model = ?",
-                        (r.session_id, r.source, r.model),
-                    )
-                conn.execute(_UPSERT, (r.session_id, r.source) + new_row)
+                )
+            conn.execute(_UPSERT, (r.session_id, r.source) + new_row)
         return len(records)
+
+    def upsert_batch(self, batch: CollectionBatch) -> int:
+        with closing(self._connect()) as conn, conn:
+            written = self._upsert_sessions(conn, batch.sessions)
+            sqlite_usage.persist(conn, batch)
+        return written
+
+    def unsynced_events_for(self, store_name: str) -> list[UsageEvent]:
+        with closing(self._connect()) as conn:
+            return sqlite_usage.pending(conn, store_name)
+
+    def mark_events_synced(self, events: list[UsageEvent], store_name: str) -> None:
+        with closing(self._connect()) as conn, conn:
+            sqlite_usage.acknowledge(conn, events, store_name)
+
 
     def close(self) -> None:
         """Flush buffers and release resources."""
