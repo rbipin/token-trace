@@ -102,6 +102,9 @@ def persist(conn: sqlite3.Connection, batch: CollectionBatch) -> None:
             coverage[key]=UsageCoverage(*key,'measured')
     for key,c in coverage.items():
         existing=conn.execute('SELECT status,reason FROM usage_coverage WHERE source=? AND session_id=?',key).fetchone()
+        if existing is not None and existing[1]==AMBIGUOUS_DESCENDANT_USAGE and not conn.execute(
+                "SELECT 1 FROM usage_events WHERE source=? AND session_id=? AND attribution='response' LIMIT 1",key).fetchone():
+            c=UsageCoverage(*key,'partial',AMBIGUOUS_DESCENDANT_USAGE)
         if existing is None or tuple(existing) != (c.status,c.reason):
             conn.execute('DELETE FROM sync_log WHERE source=? AND session_id=?',key)
         conn.execute('INSERT INTO usage_coverage(source,session_id,status,reason) VALUES (?,?,?,?) '

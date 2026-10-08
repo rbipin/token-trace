@@ -136,3 +136,16 @@ def test_acknowledging_stale_event_does_not_hide_correction(tmp_path):
     store.upsert_batch(CollectionBatch((rec,),(replace(event(),input_tokens=120),)))
     store.mark_events_synced(sent,'remote')
     assert store.unsynced_events_for('remote')[0].input_tokens == 120
+
+
+def test_ambiguous_family_coverage_is_not_lost_when_child_is_outside_lookback(tmp_path):
+    from src.usage import AMBIGUOUS_DESCENDANT_USAGE
+    path=tmp_path/'usage.db'
+    store=SqliteStore(path)
+    rec=SessionRecord('s1','codex_cli',model='gpt-5.3-codex',date='2026-10-08')
+    snap=replace(event(eid='snapshot:old'),attribution='snapshot_delta',response_id=None)
+    store.upsert_batch(CollectionBatch((rec,),(snap,),(UsageCoverage('codex_cli','s1','partial',AMBIGUOUS_DESCENDANT_USAGE),)))
+    store.upsert_batch(CollectionBatch((rec,),(snap,),(UsageCoverage('codex_cli','s1','measured'),)))
+    with sqlite3.connect(path) as conn:
+        assert conn.execute('SELECT status FROM usage_coverage').fetchone()[0] == 'partial'
+        assert conn.execute('SELECT COUNT(*) FROM reporting_usage').fetchone()[0] == 0
