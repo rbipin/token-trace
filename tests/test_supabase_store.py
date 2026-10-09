@@ -164,15 +164,19 @@ def test_upsert_includes_tool_and_token_detail_columns():
 
 
 def test_usage_events_target_explicit_table_with_independent_identity():
+    from dataclasses import replace
     from usage_helpers import event
     mock_client=MagicMock()
     with patch('src.stores.supabase._create_client',return_value=mock_client):
         store=SupabaseStore('https://x.supabase.co','secret',usage_table='events')
-        assert store.upsert_events([event()]) == 1
+        assert store.upsert_events([replace(event(), turn_id='turn-1')]) == 1
     mock_client.table.assert_called_with('events')
     rows=mock_client.table.return_value.upsert.call_args.args[0]
     assert rows[0]['date'] == '2026-10-08'
     assert rows[0]['utc_offset_minutes'] == 0
+    assert rows[0]['event_id'] == 'r1'
+    assert 'turn_id' not in rows[0]
+    assert 'response_id' not in rows[0]
     assert mock_client.table.return_value.upsert.call_args.kwargs['on_conflict'] == 'source,session_id,event_id'
     assert not {'cwd','prompt','content','arguments','reasoning_text'} & rows[0].keys()
 

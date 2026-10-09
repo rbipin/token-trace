@@ -74,7 +74,12 @@ class SupabaseStore:
             raise ValueError('configure usage_table after applying the usage-events migration')
         if not events:
             return 0
-        self._client.table(self._usage_table).upsert([asdict(e) for e in events],
+        rows = [
+            {key: value for key, value in asdict(event).items()
+             if key not in {'turn_id', 'response_id'}}
+            for event in events
+        ]
+        self._client.table(self._usage_table).upsert(rows,
             on_conflict='source,session_id,event_id').execute()
         return len(events)
 

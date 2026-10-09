@@ -1,11 +1,11 @@
 -- Apply manually before enabling stores.supabase.usage_table.
 -- Default table names below; adapt both names when using custom configured tables.
--- Existing token_sessions rows and conflict key remain unchanged.
+-- Existing token_usage rows and conflict key remain unchanged.
 BEGIN;
-ALTER TABLE token_sessions ADD COLUMN IF NOT EXISTS canonical_model text;
-ALTER TABLE token_sessions ADD COLUMN IF NOT EXISTS usage_coverage text DEFAULT 'legacy'
+ALTER TABLE token_usage ADD COLUMN IF NOT EXISTS canonical_model text;
+ALTER TABLE token_usage ADD COLUMN IF NOT EXISTS usage_coverage text DEFAULT 'legacy'
     CHECK (usage_coverage IN ('legacy','measured','partial','unavailable'));
-ALTER TABLE token_sessions ADD COLUMN IF NOT EXISTS usage_coverage_reason text;
+ALTER TABLE token_usage ADD COLUMN IF NOT EXISTS usage_coverage_reason text;
 
 CREATE TABLE IF NOT EXISTS token_usage_events (
     source text NOT NULL,
@@ -20,8 +20,6 @@ CREATE TABLE IF NOT EXISTS token_usage_events (
     cache_read_tokens bigint NOT NULL DEFAULT 0 CHECK (cache_read_tokens >= 0),
     cache_creation_tokens bigint NOT NULL DEFAULT 0 CHECK (cache_creation_tokens >= 0),
     reasoning_tokens bigint NOT NULL DEFAULT 0 CHECK (reasoning_tokens >= 0 AND reasoning_tokens <= output_tokens),
-    turn_id text,
-    response_id text,
     canonical_model text,
     context text NOT NULL DEFAULT 'personal',
     attribution text NOT NULL CHECK (attribution IN ('response','snapshot_delta')),
