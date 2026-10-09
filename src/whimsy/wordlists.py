@@ -139,9 +139,9 @@ ADJECTIVES: tuple[str, ...] = (
 )
 
 SURNAMES: tuple[str, ...] = (
-    # Maria Gaetana Agnesi - Italian mathematician, philosopher, theologian and humanitarian. She was the first woman to write a mathematics handbook and the first woman appointed as a Mathematics Professor. https://en.wikipedia.org/wiki/Maria_Gaetana_Agnesi
+    # Maria Gaetana Agnesi - Italian mathematician, philosopher, theologian and humanitarian. She was the first woman to write a mathematics handbook and the first woman appointed as a Mathematics Professor at a university. https://en.wikipedia.org/wiki/Maria_Gaetana_Agnesi
     "agnesi",
-    # Muhammad ibn Jābir al-Ḥarrānī al-Battānī was a founding father of astronomy. https://en.wikipedia.org/wiki/Mu%E1%B8%A5ammad_ibn_J%C4%81bir_al-%E1%B8%A4arr%C4%81n%C4%AB_al-Batt%C4%81n%C4%AB
+    # Muhammad ibn Jābir al-Ḥarrānī al-Battānī was a founding father of astronomy. https://en.wikipedia.org/wiki/Mu%E1%B8%A5ammad_ibn_J%C4%81bir_al-%E1%B8%A4arr%C4%81n%C4%AB_al-Batt%C4%81n%C4%A1
     "albattani",
     # Frances E. Allen, became the first female IBM Fellow in 1989. In 2006, she became the first female recipient of the ACM's Turing Award. https://en.wikipedia.org/wiki/Frances_E._Allen
     "allen",
@@ -177,7 +177,7 @@ SURNAMES: tuple[str, ...] = (
     "benz",
     # Homi J Bhabha - was an Indian nuclear physicist, founding director, and professor of physics at the Tata Institute of Fundamental Research. https://en.wikipedia.org/wiki/Homi_J._Bhabha
     "bhabha",
-    # Bhaskara II - Ancient Indian mathematician-astronomer whose work on calculus predates Newton and Leibniz by over half a millennium - https://en.wikipedia.org/wiki/Bh%C4%81skara_II#Calculus
+    # Bhaskara II - Ancient Indian mathematician-astronomer whose work on calculus predates Newton and Leibniz by over half a millennium - https://en.wikipedia.org/wiki/Bh%C4%81skara_II
     "bhaskara",
     # Sue Black - British computer scientist and campaigner. She has been instrumental in saving Bletchley Park, the site of World War II codebreaking - https://en.wikipedia.org/wiki/Sue_Black_(computer_scientist)
     "black",
@@ -193,11 +193,11 @@ SURNAMES: tuple[str, ...] = (
     "borg",
     # Satyendra Nath Bose - He provided the foundation for Bose–Einstein statistics and the theory of the Bose–Einstein condensate. - https://en.wikipedia.org/wiki/Satyendra_Nath_Bose
     "bose",
-    # Katherine Louise Bouman is an imaging scientist and Assistant Professor of Computer Science at the California Institute of Technology. She researches computational methods for imaging, and develops algorithms for imaging through turbulence. https://en.wikipedia.org/wiki/Katie_Bouman
+    # Katherine Louise Bouman is an imaging scientist and Assistant Professor of Computer Science at the California Institute of Technology. She researches computational methods for imaging. https://en.wikipedia.org/wiki/Katherine_Bouman
     "bouman",
     # Evelyn Boyd Granville - She was one of the first African-American woman to receive a Ph.D. in mathematics; she earned it in 1949 from Yale University. https://en.wikipedia.org/wiki/Evelyn_Boyd_Granville
     "boyd",
-    # Brahmagupta - Ancient Indian mathematician during 598-670 CE who gave rules to compute with zero - https://en.wikipedia.org/wiki/Brahmagupta#Zero
+    # Brahmagupta - Ancient Indian mathematician during 598-670 CE who gave rules to compute with zero - https://en.wikipedia.org/wiki/Brahmagupta
     "brahmagupta",
     # Walter Houser Brattain co-invented the transistor - https://en.wikipedia.org/wiki/Walter_Houser_Brattain
     "brattain",
@@ -541,6 +541,8 @@ SURNAMES: tuple[str, ...] = (
     "sanderson",
     # Satoshi Nakamoto is the name used by the unknown person or group behind Bitcoin. https://en.wikipedia.org/wiki/Satoshi_Nakamoto
     "satoshi",
+    # Abdus Salam - Pakistani theoretical physicist; 1979 Nobel Prize in Physics for electroweak unification. https://en.wikipedia.org/wiki/Abdus_Salam
+    "salam",
     # Adi Shamir - Israeli cryptographer and co-inventor of RSA. https://en.wikipedia.org/wiki/Adi_Shamir
     "shamir",
     # Claude Shannon - The father of information theory and digital circuit design theory. https://en.wikipedia.org/wiki/Claude_Shannon
@@ -705,4 +707,12 @@ SURNAMES: tuple[str, ...] = (
     "brenner",
     # Edvard Moser - Norwegian neuroscientist; 2014 Nobel Prize in Physiology or Medicine for grid cells discovery. https://en.wikipedia.org/wiki/Edvard_Moser
     "edvard_moser",
+    # Bernardo Houssay - Argentine physiologist; 1947 Nobel Prize in Physiology or Medicine for endocrine regulation research. https://en.wikipedia.org/wiki/Bernardo_Houssay
+    "houssay",
+    # Luis Federico Leloir - Argentine biochemist; 1970 Nobel Prize in Chemistry for carbohydrate metabolism. https://en.wikipedia.org/wiki/Luis_Federico_Leloir
+    "leloir",
+    # Mario Molina - Mexican chemist; 1995 Nobel Prize in Chemistry for ozone depletion research. https://en.wikipedia.org/wiki/Mario_Molina
+    "molina",
+    # Osamu Shimomura - Japanese chemist; 2008 Nobel Prize in Chemistry for GFP discovery. https://en.wikipedia.org/wiki/Osamu_Shimomura
+    "shimomura",
 )
