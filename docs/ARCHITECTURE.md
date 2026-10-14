@@ -78,8 +78,6 @@ flowchart LR
 | --- | --- |
 | `tracker.py` | CLI entry point: builds argparse from the command registry and dispatches |
 | `src/commands/` | `Command` protocol + static `COMMANDS` registry; one module per subcommand (`collect`, `report`, `config`, `projects`, `sync`) |
-| `src/usage.py` | Frozen usage events, coverage and collection batches; token/time normalization |
-| `src/stores/sqlite_usage.py` | Atomic ledger persistence, additive migration and daily reporting views |
 | `src/models.py` | `SessionRecord` frozen dataclass; `merge_records` dedupe |
 | `src/collectors/` | Read-only source adapters (`ActivityCollector` protocol) |
 | `src/pipeline.py` | Fluent `TrackerPipeline`; parallel collection, middleware chain, fan-out to stores |
@@ -94,72 +92,37 @@ flowchart LR
 
 ---
 
-## Codex daily accounting
+## Daily session rows
 
-Codex uses the optional `BatchActivityCollector.collect_batch(since)` capability.
-`Paths.codex_home` defaults to `~/.codex`, respects `CODEX_HOME`, and permits
-explicit injection. `src/collectors/codex_cli.py` discovers nested active and
-archived JSONL rollouts by recent local mtime, then reads their complete available
-histories in streaming passes. Metadata session IDs survive archive moves and
-renaming. Projects use the existing resolver, and raw paths/conversation content
-never enter batches or sync payloads.
+The local `sessions` table stores one row per `(session_id, source, model,
+date)`, where `date` is the machine's local calendar day of the activity (the
+session's start date when a source only reports a total). All non-key columns
+describe that day only; session-level views aggregate with `SUM` for counts,
+`MIN(start_ts)`, `MAX(end_ts)`, and `MAX(context_peak_tokens)`.
 
-The pipeline wraps session-only collectors in `CollectionBatch`, merges sessions
-by their existing raw key, deduplicates events by `(source,session_id,event_id)`,
-stamps context on both, and invokes optional `process_events()` middleware.
-SQLite receives one atomic batch; session-only primary stores retain summaries
-with an explicit unsupported-event notice. Ordinary remote retries use the same
-`run_sync()` path as the post-collect sweep.
+Every collector emits day rows and selects sessions by **recent activity** (file
+mtime, or Copilot `updated_at`), not by start date. `SqliteStore.upsert()` groups
+records by `(session_id, source)` and, in one transaction, replaces all stored
+rows of any session whose row set changed, clearing that session's `sync_log`
+entries so the whole session is re-pushed. Unchanged sessions are not touched.
 
-Per-response `token_usage_record` counts take precedence. Older cumulative
-snapshots yield component deltas only with a defensible baseline; repeated
-snapshots contribute nothing. Missing/null accounting does not fabricate a zero
-request. Decreases without an explicit fresh-accounting marker and uncertain
-inherited history are partial. Explicit thread IDs exclude copied fork history.
-When known descendants make a parent's cumulative ownership uncertain, parent
-snapshots are retained for audit but excluded from accepted reports. Supported
-child response records remain attributable to their originating session.
+- **Claude** buckets each assistant message by the local date of its
+  `timestamp`; untimed messages go to the session's start day.
+- **Codex** (`CodexCliCollector.scan()`) parses active and archived rollouts,
+  deduplicates usage events in memory (response IDs and fingerprints, fork
+  ownership, snapshot-delta fallback), then `collect()` aggregates them per
+  local day. Tool calls are bucketed by their own row's timestamp. Ambiguous
+  parent snapshots are dropped with a collect-time warning. `Paths.codex_home`
+  defaults to `~/.codex` and respects `CODEX_HOME`.
+- **Copilot** buckets `assistant_usage_events` by the local date of `created_at`
+  (naive UTC) per model, with cache-exclusive input; without that table the
+  shutdown totals land on the start date.
 
-| Relation | Identity / purpose |
-|---|---|
-| `sessions` | Lifetime metadata and accepted totals, keyed by `(session_id,source,model)` |
-| `usage_events` | Raw immutable accounting identities `(source,session_id,event_id)`; corrected values are upserted |
-| `usage_coverage` | Session status `measured`, `partial`, or `unavailable`; absent marker means legacy |
-| `usage_event_sync_log` | Independent acknowledgment per event and remote store |
-| `usage_coverage_sync_log` | Exact coverage revision received for each session/model and remote store |
-| `usage_daily` | Accepted per-model local-day usage; lifetime metadata retained separately |
-| `reporting_usage` | Daily ledger rows plus exclusively uncovered legacy sessions |
-
-Events persist UTC timestamps and local dates/historical offsets. Existing event
-dates and offsets survive timezone changes. Caches are removed from inclusive
-input and stored separately; reasoning remains a subset of output. Footprint is
-a single request's inclusive input plus output. Corrections clear affected event
-acknowledgments; acknowledgments compare revisions so an in-flight stale push
-cannot hide a correction. Coverage changes also invalidate session sync markers.
-Session-batch acknowledgments atomically compare the sent session and coverage
-revision with current storage. Late child discovery updates persisted parent
-coverage even when the parent rollout is outside the collection lookback.
-Atomic rollback protects all three batch relations.
-
-All dashboard usage surfaces and CLI period rollups use `reporting_usage`.
-Session views regroup scoped daily rows by raw session/model identity and label
-lifetime timestamps/activity. Distinct source/session counts avoid inflation
-across models and days; cache efficiency is period-scoped. Attribution metadata
-exposes legacy tokens plus partial/unavailable-session counts, including sessions
-without reportable events. `--detailed` is a raw session diagnostic. Entry points
-prepare additive local schema before reading older databases.
-
-Remote event support is optional and explicitly enabled by `usage_table` after
-operators apply `docs/migrations/2026-10-08-usage-events.sql` (adapt default table
-names if configured otherwise). Session and event retries/acknowledgments are
-independent per store, and dry-run reports both counts without remote writes.
-Event-aware session batches carry `usage_coverage` and `usage_coverage_reason`.
-Enabling event support also sends coverage for sessions already synchronized
-through the session-only interface; a separate acknowledgment records receipt.
-Remote consumers must exclude covered legacy summaries, prefer response events
-over snapshots within each session, and omit snapshot deltas with reason
-`ambiguous descendant cumulative usage ownership`. Summing the raw audit table
-would reintroduce superseded or ambiguously owned usage.
+Reports and the dashboard read `sessions` directly: period filters apply to
+`date`, session views regroup day rows by `(session_id, source, model)` inside
+the period, session counts are distinct `(source, session_id)`, and
+`--detailed` lists raw day rows. Remote stores replace whole sessions, so
+`unsynced_for()` returns every row of any session that has an unsynced row.
 
 ## Collect flow
 
@@ -225,7 +188,7 @@ stable docker-style masked name tied to that same guid.
 ### The record model
 
 `SessionRecord` (`src/models.py`) is a **frozen dataclass** — one row per
-`(session_id, source, model)`. Because it's frozen, nothing may mutate a
+`(session_id, source, model, date)`. Because it's frozen, nothing may mutate a
 record in place; transforms (including middleware `process()`) must build a
 new instance with `dataclasses.replace()`. Fields: `date`, `start_ts`, `end_ts`,
 `project`, `turns`, `tool_calls`, `input_tokens`, `output_tokens`,
@@ -509,18 +472,23 @@ absent alias file never crashes CLI startup.
 in a repo checkout; override with `--db`).
 
 - **`sessions` table** — mirrors `SessionRecord`, with
-  `PRIMARY KEY (session_id, source, model)` and `INSERT OR REPLACE` upserts.
+  `PRIMARY KEY (session_id, source, model, date)` and replace-per-session upserts
+  (see [Daily session rows](#daily-session-rows)).
 - **`project_identities` table** — also lives in `usage.db`, keyed by a
   normalized (case-insensitive, trimmed) `cwd_key`, with stable `guid` and
   optional `whimsical_name` columns. It is local-only: `sync_log`,
   `unsynced_for()`, and remote-store upserts never reference it. Inspect it
   with `python3 tracker.py projects`.
-- **`sync_log` table** — `PRIMARY KEY (session_id, source, model,
+- **`sync_log` table** — `PRIMARY KEY (session_id, source, model, date,
   store_name)`; tracks which rows have been pushed to which remote store,
   so `sync` is incremental and idempotent per store.
 - **Migration** — on first connect, a legacy `usage` / `daily_activity`
   table from older versions is dropped with a warning asking the user to
   re-collect (`collect --lookback 90`).
+- **Daily-key migration** — databases created before daily rows are rebuilt on
+  first connect so `date` joins the primary keys of `sessions` and `sync_log`
+  (orphan sync entries are dropped), and the retired usage-event ledger
+  tables and views are dropped.
 
 The whimsical-name implementation lives in `src/whimsy/`, a self-contained
 stdlib-only package with one public function, `generate_name(existing=None,
@@ -621,8 +589,12 @@ The `collect` command also fans out to configured remote stores directly
 collected while offline.
 
 **Built-in Supabase store** (`src/stores/supabase.py`) — upserts into a
-`token_sessions` table with `on_conflict="session_id,source,model"`
-(mirroring the local primary key). The client is created lazily on first
+`token_sessions` table with `on_conflict="session_id,source,model,date"`
+(mirroring the local key). Before the upsert it deletes the remote rows of each
+pushed session (chunks of 100 ids), so days dropped by a re-collect do not
+linger; apply `docs/migrations/2026-10-12-daily-session-rows.sql` first. The
+replace is not atomic over REST — a failed upsert leaves the rows unsynced
+locally and the next `collect`/`sync` repairs the remote. The client is created lazily on first
 upsert; requires the optional dependency `supabase>=2.0`
 (`pip install tokentracer[supabase]`). The upserted payload includes
 `tool_calls`, `reasoning_tokens`, and `context_peak_tokens`; the remote

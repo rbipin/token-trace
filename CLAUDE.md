@@ -22,7 +22,7 @@ python3 -m pytest tests/test_claude_cli_collector.py -q
 python3 tracker.py collect --lookback 3
 
 # Report usage
-# Default: today's usage grouped by session/model, with lifetime metadata (Project Source Model Start End Input Output Reasoning CacheRead CacheCreate CacheHit% CtxPeak Turns Tools)
+# Default: today's usage grouped by session/model (Project Source Model Start End Input Output Reasoning CacheRead CacheCreate CacheHit% CtxPeak Turns Tools)
 python3 tracker.py report
 
 # --summary: compact session view (Session Project Date Start End Turns Tokens CacheHit%)
@@ -92,8 +92,7 @@ src/
     sync.py              SyncCommand, using common.run_sync() for its push/retry logic
     common.py            load_remote_stores helper + run_sync(sqlite_store, remote_stores, dry_run) core push/retry logic, shared by collect and sync
   schedule.py             OS-native scheduling helpers: parse_time, resolve_executable, plus macOS (launchd) and Windows (Task Scheduler) schedule_*/unschedule_* functions
-  usage.py               Frozen UsageEvent, UsageCoverage, CollectionBatch; non-overlapping token accounting and local-day conversion
-  models.py              SessionRecord frozen dataclass (has canonical_model field); merge_records deduplicates by (session_id, source, model)
+  models.py              SessionRecord frozen dataclass (has canonical_model field); merge_records deduplicates by (session_id, source, model, date)
   middleware/            Pluggable RecordMiddleware chain (Pipes-and-Filters), run in TrackerPipeline.run() after merge_records, before upsert
     base.py              RecordMiddleware Protocol: name, applies(records) -> bool, process(records) -> list[SessionRecord]
     model_normalize.py   ModelNormalizeMiddleware — always applies; sets canonical_model via normalize_model()
@@ -103,15 +102,14 @@ src/
   repo_identity.py       resolve_repo_slug(cwd): walks up to .git, parses origin remote from config -> owner/repo (read-only, cached, never raises)
   collectors/
     base.py              ActivityCollector protocol + to_date / to_local_iso helpers
-    codex_cli.py         Reads active/archive Codex rollouts; response accounting with cumulative-delta fallback and coverage diagnostics
-    copilot_cli.py       Reads session-store.db + events.jsonl from ~/.copilot/; yields per-(session, model) records
-    claude_cli.py        Reads ~/.claude/projects/**/*.jsonl; yields one record per JSONL (session)
+    codex_cli.py         Reads active/archive Codex rollouts in memory (response accounting, cumulative-delta fallback); yields one record per (session, model, local day); ambiguity surfaces as collect warnings
+    copilot_cli.py       Reads session-store.db + events.jsonl from ~/.copilot/; yields per-(session, model, local day) records
+    claude_cli.py        Reads ~/.claude/projects/**/*.jsonl; yields one record per (session, local day) with assistant activity
   whimsy/                Standalone docker-style name generator (stdlib-only, extractable to its own repo; only public API is generate_name)
   stores/
     __init__.py          SessionStore Protocol (name attr + upsert + close)
     registry.py          load_store_registry() (entry-point discovery + built-in fallback), instantiate_store()
-    sqlite_usage.py      Additive event/coverage schema, atomic persistence, daily views, event acknowledgments
-    sqlite.py            SqliteStore — local SQLite sink; sessions table, idempotent upsert, sync tracking
+    sqlite.py            SqliteStore — local SQLite sink; daily rows, replace-per-session upsert, whole-session sync tracking
     supabase.py          SupabaseStore — remote sink; upserts into a Supabase token_sessions table
   store.py               Deprecated alias for SqliteStore (kept for backward compat)
   pipeline.py            Fluent TrackerPipeline; runs collectors in parallel via ThreadPoolExecutor; .middlewares(*mw) registers the RecordMiddleware chain run in run(); a successful remote-store push also marks the record synced in the local store's sync_log (via mark_synced, duck-typed so pipeline.py never imports SqliteStore) — a mark_synced failure is reported separately and does not count as a push failure
@@ -119,14 +117,14 @@ src/
   report.py              UsageReporter: all/day/month/year periods, cache efficiency header, default detailed session view includes Reasoning, CtxPeak, and Tools columns, --summary, --by-project, --detailed (all rows + all columns + Synced from sync_log)
 ```
 
-**Legacy data flow**: `Collector.collect(since)` → `List[SessionRecord]` → `merge_records` deduplicates → RecordMiddleware chain transforms (e.g. `ModelNormalizeMiddleware` sets `canonical_model`) → `UsageStore.upsert` writes SQLite → `UsageReporter.report` aggregates for display.
+**Data flow**: `Collector.collect(since)` → `List[SessionRecord]` → `merge_records` deduplicates → RecordMiddleware chain transforms (e.g. `ModelNormalizeMiddleware` sets `canonical_model`) → `UsageStore.upsert` writes SQLite → `UsageReporter.report` aggregates for display.
 
 **Key invariants**:
-- `collect` is always idempotent — re-running overwrites existing session rows. Merge key is `(session_id, source, model)`.
-- Upsert is **last-write-wins** (INSERT OR REPLACE). There is no summation across runs.
+- `collect` is always idempotent — re-running replaces each collected session's rows. Merge key is `(session_id, source, model, date)`.
+- Upsert **replaces** all stored rows of each collected `(session_id, source)` in one transaction and clears that session's `sync_log` entries when anything changed. There is no summation across runs.
 - Collectors are **read-only** with respect to their source files — they must never write to them.
 
-**UsageStore schema**: `sessions` table with PRIMARY KEY `(session_id, source, model)`. On first connect, if an old `usage` / `daily_activity` table exists it is dropped with a warning and the user is asked to re-collect. A separate local-only `project_identities` table stores normalized project key → guid → whimsical-name mappings and is never queried by sync code.
+**UsageStore schema**: `sessions` table with PRIMARY KEY `(session_id, source, model, date)` (one row per local day; `sync_log` adds `date` to its key; databases created before daily rows are rebuilt automatically on first connect). On first connect, if an old `usage` / `daily_activity` table exists it is dropped with a warning and the user is asked to re-collect. A separate local-only `project_identities` table stores normalized project key → guid → whimsical-name mappings and is never queried by sync code.
 
 **Config file**: `~/.tokentracer/.tokentracer.toml`. `[tracking]` supports `track_project_names` as a string enum: `"yes"` (real name), `"no"` (stable 12-hex guid per project (repo slug or folder name); default), or `"whimsical"` (stable docker-style masked name). Project identity is keyed by git repo slug (`owner/repo` — from the Copilot session `repository` column, or by reading `<cwd>/.git/config` origin remote for Claude sessions), falling back to the cwd folder name; full paths are never stored. Two clones of the same repo therefore map to one project. `yes` mode displays the full slug (e.g. `rbipin/TokenTrace`). `tracker.py config set track_project_names <value>` validates against that enum; invalid or legacy boolean TOML values warn and fall back to `"no"`. The `collect` CLI overrides it per run with `--project-mode <yes|no|whimsical>`. `[tracking]` also supports `context` (string, default `"personal"`) — a usage-context label (e.g. `"work"`) stamped on every collected `SessionRecord` via `TrackerPipeline.context()` and stored in the `context` column of the `sessions` table (and pushed to remote stores); CLI flag `--context <label>` on `collect` overrides it per run. `[stores.<name>]` sections declare remote stores (see below); `${VAR}` placeholders in string values are expanded at instantiation time — lookup order is `os.environ` first, then `~/.tokentracer/.tokentracer.env` (simple `KEY=VALUE` file, `#` comments, optional quotes). Missing vars raise `ValueError`.
 
@@ -139,7 +137,7 @@ Stores implement the `SessionStore` Protocol in `src/stores/__init__.py` (`name:
 - **Sync flow**: `tracker.py sync` reads `[stores.*]` from `~/.tokentracer/.tokentracer.toml`, and for each remote store pushes rows the SqliteStore reports as unsynced (`unsynced_for(store_name)`), then marks them synced per store. `--dry-run` prints pending counts only. Failed stores are reported without blocking others; stores are always closed in a `finally`. This push/retry logic lives in `run_sync()` (`src/commands/common.py`), shared by `sync` and by `collect`'s post-run sweep below.
 - **Collect also syncs**: `tracker.py collect` pushes freshly-collected records to remote stores inline as part of the pipeline run (`TrackerPipeline.run()`), marking each successful push synced immediately. After that, if any remote stores are configured, `collect` calls `run_sync()` once more to sweep and retry anything still marked unsynced — records whose remote push failed in this run or a prior one. In steady state (no failures) the sweep finds nothing pending and prints nothing; it only surfaces output (`Synced N pending record(s) to <store>`, or a `Warning [<store>]: ...` on failure) when there's something to report. This means the scheduled task (registered via `tracker.py schedule`, which only ever calls `collect`) is self-healing without a second scheduled sync job.
 
-**Built-in remote store — Supabase** (`src/stores/supabase.py`): upserts rows into a `token_sessions` table with `on_conflict="session_id,source,model"` (mirrors the local primary key). Lazy client creation on first upsert; requires optional dep `supabase>=2.0` (`pip install tokentracer[supabase]`). The upserted payload includes `tool_calls`, `reasoning_tokens`, and `context_peak_tokens`; the remote `token_sessions` table must have those bigint columns. Configure with:
+**Built-in remote store — Supabase** (`src/stores/supabase.py`): upserts rows into a `token_sessions` table with `on_conflict="session_id,source,model,date"` (mirrors the local primary key). Before upserting it deletes each pushed session's remote rows (chunks of 100 ids) so days dropped by a re-collect do not linger; apply `docs/migrations/2026-10-12-daily-session-rows.sql` first. Third-party stores that only implement `upsert` may keep stale day rows. Lazy client creation on first upsert; requires optional dep `supabase>=2.0` (`pip install tokentracer[supabase]`). The upserted payload includes `tool_calls`, `reasoning_tokens`, and `context_peak_tokens`; the remote `token_sessions` table must have those bigint columns. Configure with:
 
 ```toml
 [stores.supabase]
@@ -156,53 +154,52 @@ table = "token_sessions"     # optional, this is the default
 4. Add tests under `tests/` mocking the client (see `tests/test_supabase_store.py`).
 5. Users enable it with a `[stores.<name>]` section in `~/.tokentracer/.tokentracer.toml`; external packages can also provide stores via the same entry-point group — no code changes here needed.
 
-**Copilot CLI data details**: newer CLI versions nest event payloads under a `data` key and use `created_at`/`updated_at` session columns (older: `startedAt`/`endedAt`) — the collector supports both. Completed sessions write a `session.shutdown` event with `modelMetrics` (per-model token breakdown; counts flat in old format, under `usage` + `requests.count` in new). Active sessions fall back to summing `outputTokens` from `assistant.message` events (new format exposes only output tokens there; full input/cache counts arrive at shutdown). Each `(session_id, model)` pair becomes one `SessionRecord`. `tool.execution_complete` events are counted into `tool_calls`, attributed per model via each event's `model` field when a shutdown event exists, and summed to the single detected model otherwise; the event scan no longer stops at `session.shutdown`. `context_peak_tokens` is computed by a bulk `MAX(input_tokens + output_tokens)` query over the `assistant_usage_events` table in `session-store.db` with `agent_id IS NULL` (`input_tokens` is cache-inclusive); if the table is absent, `context_peak_tokens` defaults to `0` without warning.
+**Copilot CLI data details**: newer CLI versions nest event payloads under a `data` key and use `created_at`/`updated_at` session columns (older: `startedAt`/`endedAt`) — the collector supports both. Completed sessions write a `session.shutdown` event with `modelMetrics` (per-model token breakdown; counts flat in old format, under `usage` + `requests.count` in new). Active sessions fall back to summing `outputTokens` from `assistant.message` events (new format exposes only output tokens there; full input/cache counts arrive at shutdown). Each `(session_id, model, local day)` becomes one `SessionRecord`. `tool.execution_complete` events are counted into `tool_calls`, attributed per model via each event's `model` field when a shutdown event exists, and summed to the single detected model otherwise; the event scan no longer stops at `session.shutdown`. `context_peak_tokens` is computed by a bulk `MAX(input_tokens + output_tokens)` query over the `assistant_usage_events` table in `session-store.db` with `agent_id IS NULL` (`input_tokens` is cache-inclusive); if the table is absent, `context_peak_tokens` defaults to `0` without warning. When `assistant_usage_events` has `created_at` rows for a session (naive UTC, converted to the local day), records are built from those rows per (model, day) with cache-exclusive input (`input_tokens - cache_read - cache_write`); `agent_id` (subagent) rows add tokens but not turns or context peak. Otherwise the shutdown/`assistant.message` totals land on the session start date. Sessions are selected by recent activity (`updated_at`/`endedAt`), not start date.
 
-**Claude CLI data details**: each conversation is a JSONL file under `~/.claude/projects/<project-id>/<conv-id>.jsonl`. The file stem is the `session_id`. Assistant messages contain `message.usage` with `input_tokens`, `output_tokens`, `cache_creation_input_tokens`, and `cache_read_input_tokens`. One `SessionRecord` per JSONL file. `tool_use` content blocks in assistant messages are counted into `tool_calls`. `context_peak_tokens` is the maximum per-message `input_tokens + cache_read_input_tokens + cache_creation_input_tokens + output_tokens` across all assistant messages. `reasoning_tokens` stays `0` (no source field in the JSONL).
+**Claude CLI data details**: each conversation is a JSONL file under `~/.claude/projects/<project-id>/<conv-id>.jsonl`. The file stem is the `session_id`. Assistant messages contain `message.usage` with `input_tokens`, `output_tokens`, `cache_creation_input_tokens`, and `cache_read_input_tokens`. One `SessionRecord` per (JSONL file, local day), bucketed by each assistant message's `timestamp` (untimed messages go to the session's start day). Files are selected by mtime and a selected file yields all its days. `tool_use` content blocks in assistant messages are counted into `tool_calls`. `context_peak_tokens` is the maximum per-message `input_tokens + cache_read_input_tokens + cache_creation_input_tokens + output_tokens` across that day's assistant messages. `reasoning_tokens` stays `0` (no source field in the JSONL).
 
 **Persisted surfaces only**: Codex editor and CLI sessions are supported through their local rollout files. Web/desktop or other editor surfaces without persisted accounting are outside scope; do not invent a collector from live-only UI telemetry.
 
 **DB default**: `usage.db` next to `tracker.py` (override with `--db`). `Config.paths` uses `Path.home()` for cross-platform compatibility; tests inject synthetic `Paths` via `Config` to stay hermetic.
 
-## Codex ledger and reporting
+## Codex and daily rows
 
 `Paths.codex_home` reads `CODEX_HOME` or defaults to `~/.codex`, with explicit
-injected paths taking precedence. `CodexCliCollector.collect_batch(since)` selects
-active/archive files by local mtime and parses their entire available histories.
-Its compatibility `collect()` still yields session summaries. Source identity is
-`codex_cli`, displayed as Codex. Preserve raw model names and metadata session IDs.
+injected paths taking precedence. `CodexCliCollector.scan(since)` selects
+active/archive files by local mtime and parses their entire available histories;
+`collect()` buckets the deduplicated usage events by local day and yields one
+`SessionRecord` per (session, raw model, day). Source identity is `codex_cli`,
+displayed as Codex. Preserve raw model names and metadata session IDs.
 
-`UsageEvent.key` is `(source, session_id, event_id)`; `SessionRecord.key` remains
-`(session_id, source, model)`. Batches commit summaries, events, and coverage in one
-transaction. Reimports preserve stored event dates and offsets. Event corrections
-invalidate acknowledgments; stale in-flight acknowledgments cannot hide a newer
-event correction. Summary token totals are reconciled from accepted persisted
-accounting, so a shortened reimport cannot erase previously recorded usage.
+Deduplication runs in memory on every collect: a response ID (or fingerprint) is
+counted once across active/archive copies and forks, response events supersede
+snapshot deltas, and a tool call is counted once per call ID on the day of its
+row. Explicit descendant metadata can make parent cumulative ownership
+ambiguous; those snapshot deltas are dropped and a warning is printed. Unknown
+ownership, malformed counts, missing usage, and truncated tails surface as
+collect-time warnings rather than guessed dates or totals. A session without
+usage yields one zero-token row on its start date.
 
-`usage_daily` groups accepted events by source/session/raw model/local day.
-`reporting_usage` combines these with session-only legacy rows using an exclusive
-coverage-marker fallback. Response events supersede snapshot deltas, including
-previously imported snapshots. Explicit descendant metadata can make parent
-cumulative ownership ambiguous; those snapshots remain in the raw audit ledger
-but are excluded from reported totals, with partial coverage. Unknown ownership,
-malformed counts, missing usage, and truncated tails must produce visible
-partial/unavailable behavior rather than guessed dates, residuals, or totals.
+## Daily rows and reporting
 
-Dashboard and CLI period queries use `reporting_usage`. Count distinct
-`(source,session_id)` sessions, not daily/model rows. Reasoning is part of output;
-caches are separate from uncached input. Label lifetime session timestamps,
-request counts, and tool calls explicitly. Period tokens, cache rates, and request
-footprints use scoped accounting. `--detailed` remains a raw session diagnostic.
-Report and dashboard startup perform additive schema initialization for older
-session databases.
+`sessions` holds one row per `(session_id, source, model, date)`; `date` is the
+local day of the activity (the start date when a source only has a session
+total). Every non-key column describes that day only. Each collect replaces all
+rows of every selected `(session_id, source)`, so collectors select by recent
+activity (file mtime, or Copilot `updated_at`) and always emit every day of a
+selected session. If a source shortens a log, the lost days disappear; sessions
+whose logs are deleted keep their stored rows.
 
-`UsageEventStore.upsert_events()` is optional. `SupabaseStore.usage_table` enables
-it only after operators apply `docs/migrations/2026-10-08-usage-events.sql`.
-`run_sync()` retries sessions and events independently; `upsert_session_batch()`
-includes coverage metadata for event-aware remotes while preserving `upsert()` for
-session-only integrations. `coverage_for_sessions()` supplies those markers from
-SQLite. Remote daily consumers must mirror the local response-precedence and
-ambiguous-parent exclusion rules; raw audit event sums are not reporting totals.
+Reports and the dashboard read `sessions` directly, and period filters apply to
+`date`. Session views group day rows by `(session_id, source, model)` inside the
+period (sums for counts, `MIN(start_ts)`, `MAX(end_ts)`,
+`MAX(context_peak_tokens)`), so a session spanning two periods appears in both
+with each period's share. Count distinct `(source, session_id)` sessions.
+Reasoning is part of output; caches are separate from uncached input.
+`--detailed` shows raw day rows.
+
+Sync: `unsynced_for` returns every row of any session that has an unsynced row,
+because remote stores replace whole sessions.
 
 Use synthetic fixtures and temporary databases; never collect live user data or
 apply a remote migration as a test. Frontend render tests run with

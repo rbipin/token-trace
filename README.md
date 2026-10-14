@@ -21,7 +21,7 @@
 ## Overview
 
 <!-- description -->
-Token Trace keeps **lifetime session summaries** (one row per session per raw model). Codex also records timestamped usage events so day, month, and year reports reflect actual usage dates. Historical Claude/Copilot summaries remain assigned to session start dates, with that limitation disclosed in reports.
+Token Trace keeps **one row per session, model, and local day**, so day, month, and year reports reflect the days tokens were actually used. Sessions whose logs are no longer on disk keep the single row first recorded for them, dated on their start date.
 <!-- /description -->
 
 <!-- purpose -->
@@ -78,15 +78,25 @@ This usage analytics tool reports locally recorded token counts per session, mod
 |---|---|---|
 | Copilot CLI | `~/.copilot/session-store.db` + `session-state/<id>/events.jsonl` | sessions, turns, per-model token counts (input, output, cache read/write, reasoning), tool calls, context peak tokens |
 | Claude Code CLI | `~/.claude/projects/**/*.jsonl` | per-session token counts (input, output, cache read/write), tool calls, context peak tokens |
-| Codex CLI / editor | `${CODEX_HOME:-~/.codex}/sessions/**/*.jsonl` and `archived_sessions/**/*.jsonl` | response usage, measured local days, raw models, caches, reasoning, request footprint, lifetime tool calls |
+| Codex CLI / editor | `${CODEX_HOME:-~/.codex}/sessions/**/*.jsonl` and `archived_sessions/**/*.jsonl` | response usage, measured local days, raw models, caches, reasoning, request footprint, tool calls |
 
-### Codex daily usage
+### Daily usage rows
+
+TokenTracer stores one row per `(session, source, model, local day)`. A session
+that runs on two days has two rows, and its lifetime total is the sum of its
+rows. Copilot, Claude, and Codex all split by day; if a source only reports a
+session total, the whole total goes on the session's start date. Each `collect`
+re-reads every recently modified log and replaces all stored rows of those
+sessions, so an old session resumed today is included by the normal scheduled
+`collect --lookback 1`. Logs that no longer exist on disk cannot be re-split, so
+history older than your retained logs (Claude keeps about 30 days by default)
+stays as it was first recorded.
 
 `CODEX_HOME` overrides `~/.codex`; an explicitly injected `Paths.codex_home`
-retains precedence in embedded use. Collection discovers both active and archived
-rollouts, selects recently modified files, and imports their complete available
-histories. An old session resumed today is therefore included by the normal
-scheduled `collect --lookback 1`; use a larger lookback to backfill untouched logs.
+retains precedence in embedded use. Codex collection discovers both active and
+archived rollouts, selects recently modified files, and imports their complete
+available histories. Session identity comes from source metadata, so archive
+moves and renamed files do not create duplicates.
 
 ```bash
 tokentracer collect --lookback 30
@@ -94,34 +104,13 @@ tokentracer report --period all --summary --json
 tokentracer sync --dry-run
 ```
 
-A session using 50,000 tokens on one local day and 30,000 on another has an
-80,000 lifetime summary and two daily totals. Idle days contribute nothing.
-Session identity comes from source metadata, so archive moves and renamed files
-are idempotent. Clearing context, compaction, and rollback retain consumed usage;
-a new session ID creates a separate session.
-
-Events store UTC timestamps alongside the importing machine's local date and
-historical UTC offset. Recollection after a timezone change preserves the stored
-date and offset. Per-response accounting takes precedence over cumulative
-snapshots. Older snapshots contribute only defensible deltas; unknown initial
-baselines and counter resets remain visibly partial. Missing accounting is
-unavailable, not a measured zero. Invalid entries and incomplete live tails do
-not erase previously stored events.
-
 Input excludes cached input and cache creation, which have their own columns.
-Reasoning is included in output and is never added twice. Request counts refer to
-recorded model responses, not user turns. Session timestamps and activity counts
-in CLI session views are labeled as lifetime metadata; tokens and cache rates
-use the selected period. The request footprint is inclusive input plus output.
-Raw model identity stays intact; optional `[codex_cli]` aliases affect display
-only. A user alias file replaces the bundled file, and distinct variants remain
-separate unless explicitly aliased.
-
-Explicit thread ownership prevents copied fork responses from being counted
-again. When a known parent has only cumulative accounting and child responses
-exist, parent snapshot ownership is ambiguous: only supported response usage is
-reported, parent coverage is partial, and raw snapshot history remains available
-for audit. Reports disclose mixed legacy, partial, and unavailable attribution.
+Reasoning is included in output and is never added twice. Raw model identity
+stays intact; optional `[codex_cli]` aliases affect display only. Explicit
+thread ownership prevents copied fork responses from being counted again. When a
+known parent has only cumulative accounting and child responses exist, the
+parent snapshot ownership is ambiguous: only supported response usage is
+reported and `collect` prints a warning.
 
 ---
 
@@ -185,7 +174,6 @@ TokenTracer/
 │  │  ├─ projects.py        # ProjectsCommand
 │  │  ├─ sync.py            # SyncCommand (+ _run_sync core logic)
 │  │  └─ common.py          # load_remote_stores helper shared by collect/sync
-│  ├─ usage.py               # frozen usage events, coverage, batches, token/time normalization
 │  ├─ models.py              # SessionRecord (frozen dataclass, has canonical_model) + merge_records
 │  ├─ middleware/            # Pluggable RecordMiddleware chain (Pipes-and-Filters)
 │  │  ├─ base.py            # RecordMiddleware protocol (name, applies, process)
@@ -196,15 +184,14 @@ TokenTracer/
 │  ├─ repo_identity.py       # resolve_repo_slug(cwd) — walks up to .git, parses origin remote
 │  ├─ collectors/            # one collector per AI tool surface
 │  │  ├─ base.py            # ActivityCollector protocol + to_date / to_local_iso helpers
-│  │  ├─ codex_cli.py       # Codex CLI/editor — timestamped response batches and coverage
-│  │  ├─ copilot_cli.py     # Copilot CLI — one record per (session, model)
+│  │  ├─ codex_cli.py       # Codex CLI/editor — one record per (session, model, local day)
+│  │  ├─ copilot_cli.py     # Copilot CLI — one record per (session, model, local day)
 │  │  └─ claude_cli.py      # Claude Code CLI — one record per JSONL session
 │  ├─ whimsy/                # Standalone docker-style masked-name generator (extractable, stdlib-only)
 │  ├─ stores/                # pluggable store backends (entry-point registry)
 │  │  ├─ __init__.py        # SessionStore protocol
 │  │  ├─ registry.py        # store discovery + instantiation (env var expansion)
-│  │  ├─ sqlite_usage.py    # additive usage ledger, daily views and independent event acknowledgments
-│  │  ├─ sqlite.py          # SqliteStore — local db, idempotent upsert, sync tracking
+│  │  ├─ sqlite.py          # SqliteStore — local db, daily rows, replace-per-session upsert, sync tracking
 │  │  └─ supabase.py        # SupabaseStore — remote Supabase sink
 │  ├─ report.py              # UsageReporter (day/month/year, cache efficiency, --summary, --by-project, --detailed)
 │  ├─ pipeline.py            # fluent TrackerPipeline — parallel collectors, .middlewares() chain
@@ -490,7 +477,7 @@ create table token_sessions (
   reasoning_tokens bigint default 0,
   context_peak_tokens bigint default 0,
   context text default 'personal',
-  primary key (session_id, source, model)
+  unique (session_id, source, model, date)
 );
 ```
 
@@ -502,37 +489,18 @@ ALTER TABLE token_sessions ADD COLUMN reasoning_tokens bigint DEFAULT 0;
 ALTER TABLE token_sessions ADD COLUMN context_peak_tokens bigint DEFAULT 0;
 ```
 
-To synchronize daily events, first apply
-[`docs/migrations/2026-10-08-usage-events.sql`](docs/migrations/2026-10-08-usage-events.sql)
-in your remote database, adapting table names for custom configurations. Then
-add `usage_table` explicitly:
-
-```toml
-[stores.supabase]
-url = "${SUPABASE_URL}"
-key = "${SUPABASE_KEY}"
-table = "token_sessions"
-usage_table = "token_usage_events"
-```
-
-The migration is additive and is never applied by collection or synchronization.
-It creates a separate event table with conflict key `(source, session_id, event_id)`
-and optional session coverage columns. The new table enables RLS with no public
-policies; the documented service-role credential supplies the existing write
-access convention. Session and event acknowledgments are independent per remote
-store, so failures and corrected events retry without resending unchanged,
-acknowledged rows. `sync --dry-run` shows both pending counts without a remote write.
-Stores without enabled event support receive session summaries and a notice;
-events remain pending locally.
-
-Remote daily consumers must use the same attribution rules as local reports:
-exclude legacy session summaries whenever `usage_coverage` is present, prefer
-response events over snapshot deltas within a session, and exclude parent
-snapshot deltas whose `usage_coverage_reason` is
-`ambiguous descendant cumulative usage ownership`. Raw event tables retain
-superseded or ambiguous snapshots for audit; summing every raw row would double
-count them. No prompt, tool arguments/output, reasoning text, or raw project path
-is included in the synchronized payload.
+Daily session rows need a remote key that includes `date`. If your table was
+created before daily rows, apply
+[`docs/migrations/2026-10-12-daily-session-rows.sql`](docs/migrations/2026-10-12-daily-session-rows.sql)
+in the Supabase SQL editor **before** upgrading, adapting the table name for
+custom configurations. The migration is never applied by collection or
+synchronization. When a session changes, TokenTracer deletes that session's
+remote rows and upserts the fresh day rows (conflict key
+`session_id,source,model,date`). The replace is not atomic over REST: if the
+upsert fails, the rows stay unsynced locally and the next `collect` or `sync`
+repairs the remote. Remove any leftover `usage_table` key from
+`[stores.supabase]`; it is no longer used. No prompt, tool arguments/output,
+reasoning text, or raw project path is included in the synchronized payload.
 
 Then:
 
@@ -549,8 +517,10 @@ tokentracer sync --dry-run   # preview
 tokentracer sync             # push
 ```
 
-Rows are upserted with conflict key `(session_id, source, model)` — the same
-primary key as the local database — so syncing is idempotent too.
+Rows are upserted with conflict key `(session_id, source, model, date)` — the same
+key as the local database — so syncing is idempotent too. Before each push the
+store deletes the remote rows of the sessions being pushed (see the Supabase
+section above).
 
 ### Writing your own store
 

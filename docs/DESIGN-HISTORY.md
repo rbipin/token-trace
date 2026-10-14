@@ -303,16 +303,42 @@ with a temporary build; CI owns the committed distribution assets.
 
 ---
 
+## 2026-10-12 — Daily Session Rows (replaces the usage-event ledger)
+
+[Design](superpowers/specs/2026-10-12-daily-session-rows-design.md) and
+[implementation plan](superpowers/plans/2026-10-12-daily-session-rows.md).
+
+The 2026-10-08 ledger located Codex usage on the right day, but it added event,
+coverage, and acknowledgment tables, two views, and a second remote table for one
+source. Recording usage per local day in the existing `sessions` table gives all
+three sources the same day-accurate model with far less machinery.
+
+- Key: `(session_id, source, model, date)` for `sessions`, `sync_log`, and the
+  Supabase conflict target. Non-key columns describe that day only.
+- Each collect deletes and re-inserts all rows of every selected session in one
+  transaction, so collectors select by recent activity and emit every day of a
+  selected session. A changed session loses all its sync entries and re-pushes
+  as a whole; `unsynced_for()` returns whole sessions because the remote replace
+  deletes every row of a pushed session.
+- Codex keeps its in-memory deduplication (response IDs, fork ownership,
+  snapshot-delta fallback) and aggregates the result per local day. Copilot
+  buckets `assistant_usage_events` by `created_at`; Claude buckets assistant
+  messages by `timestamp`.
+- Accepted trade-offs: response-ID deduplication across runs, day assignment
+  that survives timezone changes, and protection against shortened re-imports
+  are gone, as are the Codex partial/unavailable coverage markers (now
+  collect-time warnings).
+- Existing rows migrate in place as day rows on their current date; logs still
+  on disk are re-split by the next collect.
+
 ## Standing invariants established across these designs
 
 - Collectors are **read-only** against their sources; `collect` is idempotent
-  (last-write-wins sessions keyed `(session_id, source, model)`; usage events
-  keyed `(source, session_id, event_id)`).
+  (each collect replaces all rows of a collected session, keyed
+  `(session_id, source, model, date)`).
 - Stdlib-only at runtime; third-party deps only as optional store extras.
 - Collection requires persisted local usage data. Codex editor rollouts are
   supported; surfaces without such data cannot provide measured token usage.
-- Daily measured usage and legacy session fallback are exclusive. Raw audit
-  events can include snapshots excluded from accepted accounting totals.
 - Reasoning tokens are a subset of output, never an additional total category.
 - `project_identities` is local-only and excluded from sync by construction.
 - Adding a collector or store requires no changes outside its own module plus

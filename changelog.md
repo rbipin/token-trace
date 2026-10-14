@@ -13,28 +13,38 @@ Earlier releases are documented in the repository's Git tags and release notes.
 
 - Codex CLI and editor usage collection from active and archived local rollouts,
   using `CODEX_HOME` or `~/.codex`.
-- Timestamped usage events, atomic SQLite batch persistence, daily reporting
-  views, and measured/partial/unavailable coverage.
-- Codex dashboard branding and notices distinguishing legacy and incomplete
-  attribution.
-- Optional remote usage-event synchronization with independent retries and an
-  [additive Supabase migration](docs/migrations/2026-10-08-usage-events.sql).
-  Remote event sync is opt-in and requires applying the migration and
-  configuring `usage_table`; local SQLite upgrades run automatically.
+- Daily session rows: Claude, Codex, and Copilot each store one row per
+  `(session, source, model, local day)`, so day, month, and year reports reflect
+  the days tokens were used.
+- Codex dashboard branding.
+- [Supabase migration](docs/migrations/2026-10-12-daily-session-rows.sql) that
+  adds `date` to the remote key. Apply it manually before upgrading.
 
 ### Changed
 
-- CLI and dashboard period totals attribute measured usage to its actual local
-  day. Existing collectors retain legacy session-date reporting.
+- `sessions` and `sync_log` primary keys include `date`. Existing databases are
+  rebuilt automatically on first run; each old row becomes the row for its
+  current date. Back up `usage.db` first.
+- Every collect replaces all stored rows of each collected session, and
+  collectors select sessions by recent activity instead of start date, so an old
+  session resumed today is re-split by day. Logs deleted from disk keep their
+  stored rows.
+- Supabase upserts use conflict key `session_id,source,model,date` and delete a
+  session's remote rows before upserting its fresh day rows. Sync returns every
+  row of a session that has any unsynced row.
+- Reports and the dashboard read `sessions` directly; session views aggregate
+  day rows within the selected period.
 - Reasoning tokens display as included in output rather than an extra additive
   category.
-- Per-response events supersede cumulative snapshots. Ambiguous parent
-  snapshots remain in the audit ledger but are excluded from accepted totals.
-  Remote event consumers must apply the same exclusions to avoid double-counting.
-- Event dates and UTC offsets remain stable on reimport; event corrections
-  invalidate acknowledgments and retry independently for each remote store.
-- Enabling remote event synchronization backfills coverage metadata for
-  sessions previously synchronized through the session-only interface.
+
+### Removed
+
+- The per-event usage ledger (`usage_events`, coverage tables, `usage_daily` and
+  `reporting_usage` views), remote event synchronization, the `usage_table`
+  Supabase option, and the dashboard attribution notices. These were never
+  released. Codex partial or ambiguous usage now appears as collect-time
+  warnings. Remove any leftover `usage_table` key from `[stores.supabase]` in
+  your config.
 
 ### Fixed
 
@@ -42,11 +52,7 @@ Earlier releases are documented in the repository's Git tags and release notes.
 - Custom-range dashboard queries binding extra filter parameters.
 - Existing databases failing daily report/dashboard queries before collection
   initialized the additive schema.
-- Late child discovery leaving an older parent aggregate counted outside the
-  collection lookback window.
 - Incomplete UTF-8 rollout tails aborting updates for unrelated sessions.
-- Coverage changes committed during an in-flight remote push being incorrectly
-  acknowledged as synchronized.
 
 See the [design history](docs/DESIGN-HISTORY.md) for accounting decisions and
 links to the approved design and implementation plan.
