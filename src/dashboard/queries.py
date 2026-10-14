@@ -105,13 +105,16 @@ def summary(
 ) -> dict:
     where, params = date_filter(period, start, end)
     extra = ""
+    filter_params = []
     if project:
         names = [project] if isinstance(project, str) else list(project)
         extra += f" AND project IN ({','.join('?' * len(names))})"
-        params.extend(names)
+        filter_params.extend(names)
     if source:
         extra += " AND source = ?"
-        params.append(source)
+        filter_params.append(source)
+
+    params += filter_params
 
     totals = conn.execute(f"""
         SELECT
@@ -120,14 +123,13 @@ def summary(
             COALESCE(SUM(cache_read_tokens), 0)      AS cache_read_tokens,
             COALESCE(SUM(cache_creation_tokens), 0)  AS cache_creation_tokens,
             COALESCE(SUM(reasoning_tokens), 0)       AS reasoning_tokens,
-            COUNT(*)                                 AS session_count,
             COUNT(DISTINCT date)                     AS active_days,
             MIN(date)                                AS first_date
         FROM sessions
         WHERE {where}{extra}
     """, params).fetchone()
 
-    rolling = _rolling_stats(conn, extra, params)
+    rolling = _rolling_stats(conn, extra, filter_params)
 
     total_tokens = (
         totals["input_tokens"] + totals["output_tokens"]
@@ -163,7 +165,7 @@ def summary(
         "cache_read_tokens": totals["cache_read_tokens"],
         "cache_creation_tokens": totals["cache_creation_tokens"],
         "reasoning_tokens": totals["reasoning_tokens"],
-        "session_count": totals["session_count"],
+        "session_count": conn.execute(f"SELECT COUNT(*) FROM (SELECT source,session_id FROM sessions WHERE {where}{extra} GROUP BY source,session_id)",params).fetchone()[0],
         "active_days": totals["active_days"],
         "first_date": totals["first_date"],
         "harnesses": [

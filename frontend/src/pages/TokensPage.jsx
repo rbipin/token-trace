@@ -34,7 +34,6 @@ export default function TokensPage() {
         { label: "Output", value: summary.output_tokens },
         { label: "Cache Read", value: summary.cache_read_tokens },
         { label: "Cache Creation", value: summary.cache_creation_tokens },
-        { label: "Reasoning", value: summary.reasoning_tokens },
       ]
     : [];
   const contextTotal = contextCategories.reduce((sum, c) => sum + c.value, 0) || 1;

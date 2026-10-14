@@ -104,3 +104,20 @@ def test_write_toml_setting_updates_existing(tmp_path, monkeypatch):
     write_toml_setting("track_project_names", "whimsical")
     content = toml.read_text()
     assert 'track_project_names = "whimsical"' in content
+
+
+def test_codex_home_precedence_and_expansion(tmp_path,monkeypatch):
+    from src.config import Paths
+    monkeypatch.setattr(Path,'home',classmethod(lambda cls:tmp_path))
+    monkeypatch.delenv('CODEX_HOME',raising=False)
+    assert Paths().codex_home == tmp_path/'.codex'
+    monkeypatch.setenv('CODEX_HOME',str(tmp_path/'custom'))
+    assert Paths().codex_home == tmp_path/'custom'
+    assert Paths(codex_home=tmp_path/'explicit').codex_home == tmp_path/'explicit'
+
+
+def test_paths_existing_positional_arguments_keep_their_meaning(tmp_path):
+    from src.config import Paths
+    paths=Paths(tmp_path/'copilot',tmp_path/'claude')
+    assert paths.copilot_home == tmp_path/'copilot'
+    assert paths.claude_projects == tmp_path/'claude'

@@ -5,6 +5,8 @@ from typing import TYPE_CHECKING
 
 from ..models import SessionRecord
 
+_DELETE_CHUNK = 100  # session ids per delete request; keeps the request URL bounded
+
 try:
     from supabase import create_client as _create_client
 except ImportError:
@@ -62,8 +64,21 @@ class SupabaseStore:
             }
             for r in records
         ]
+        # Replace whole sessions: drop their remote day rows first so days removed
+        # by a re-collect don't linger. Not atomic over REST — if the upsert below
+        # fails, the rows stay unsynced locally and the next collect/sync repairs it.
+        by_source: dict[str, list[str]] = {}
+        for r in records:
+            ids = by_source.setdefault(r.source, [])
+            if r.session_id not in ids:
+                ids.append(r.session_id)
+        for source, session_ids in by_source.items():
+            for i in range(0, len(session_ids), _DELETE_CHUNK):
+                (self._client.table(self._table).delete()
+                    .eq("source", source).in_("session_id", session_ids[i:i + _DELETE_CHUNK])
+                    .execute())
         self._client.table(self._table).upsert(
-            rows, on_conflict="session_id,source,model"
+            rows, on_conflict="session_id,source,model,date"
         ).execute()
         return len(records)
 

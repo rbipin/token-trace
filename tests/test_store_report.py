@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -85,23 +85,24 @@ from src.report import UsageReporter
 
 def _populate(db: Path) -> None:
     store = UsageStore(db)
+    month_start = date.today().replace(day=1)
     store.upsert([
         SessionRecord(
             session_id="s1", source="claude_cli", model="claude-sonnet-4-6",
-            date="2026-07-01", turns=3,
+            date=month_start.isoformat(), turns=3,
             input_tokens=1000, output_tokens=200,
             cache_creation_tokens=500, cache_read_tokens=4000,
         ),
         SessionRecord(
             session_id="s2", source="claude_cli", model="claude-sonnet-4-6",
-            date="2026-07-02", turns=2,
+            date=month_start.replace(day=2).isoformat(), turns=2,
             input_tokens=800, output_tokens=150,
             cache_creation_tokens=200, cache_read_tokens=2000,
             project="myapp",
         ),
         SessionRecord(
             session_id="s3", source="claude_cli", model="claude-sonnet-4-6",
-            date="2026-06-30", turns=4,
+            date=(month_start - timedelta(days=1)).isoformat(), turns=4,
             input_tokens=500, output_tokens=100,
             cache_creation_tokens=0, cache_read_tokens=0,
         ),
@@ -269,12 +270,12 @@ def test_period_summary_merges_dated_and_alias_model_variants(tmp_db):
     store.upsert([
         SessionRecord(
             session_id="s1", source="claude_cli", model="claude-haiku-4-5-20251001",
-            canonical_model="claude-haiku-4-5", date="2026-07-01", turns=3,
+            canonical_model="claude-haiku-4-5", date=date.today().isoformat(), turns=3,
             input_tokens=100, output_tokens=10,
         ),
         SessionRecord(
             session_id="s2", source="claude_cli", model="claude-haiku-4-5",
-            canonical_model="claude-haiku-4-5", date="2026-07-01", turns=2,
+            canonical_model="claude-haiku-4-5", date=date.today().isoformat(), turns=2,
             input_tokens=50, output_tokens=5,
         ),
     ])

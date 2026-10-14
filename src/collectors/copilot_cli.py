@@ -15,8 +15,15 @@ from ..repo_identity import resolve_repo_slug
 _TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}T[\d:.]+Z)")
 
 
+def _utc(ts: str) -> str:
+    """assistant_usage_events.created_at defaults to SQLite datetime('now'): naive UTC."""
+    if ts.endswith("Z") or "+" in ts[10:]:
+        return ts
+    return ts.replace(" ", "T") + "Z"
+
+
 class CopilotCliCollector:
-    """Yields one SessionRecord per (Copilot session id, model)."""
+    """Yields one SessionRecord per (Copilot session id, model, local day)."""
 
     source = "copilot_cli"
 
@@ -39,6 +46,7 @@ class CopilotCliCollector:
         try:
             rows = self._query_sessions(conn)
             peaks = self._query_context_peaks(conn)
+            daily = self._query_daily_usage(conn)
         except sqlite3.OperationalError as exc:
             print(
                 f"Warning [copilot_cli]: could not read sessions table: {exc}",
@@ -54,7 +62,10 @@ class CopilotCliCollector:
             end_ts = row["end_ts"]
 
             session_date = to_date(start_ts)
-            if session_date is None or session_date < since:
+            if session_date is None:
+                continue
+            # Select by recent activity so a resumed old session is updated.
+            if (to_date(end_ts) or session_date) < since:
                 continue
 
             project: str | None = None
@@ -74,7 +85,8 @@ class CopilotCliCollector:
             end_iso = to_local_iso(end_ts)
 
             yield from self._parse_events(
-                session_id, date_str, start_iso, end_iso, project, peaks
+                session_id, date_str, start_iso, end_iso, project, peaks,
+                daily.get(session_id, []),
             )
 
     @staticmethod
@@ -97,6 +109,31 @@ class CopilotCliCollector:
             f"SELECT id, cwd, repository, "
             f"{start_col} AS start_ts, {end_col} AS end_ts FROM sessions"
         ).fetchall()
+
+    @staticmethod
+    def _query_daily_usage(conn: sqlite3.Connection) -> dict[str, list[sqlite3.Row]]:
+        """Timestamped per-request usage, grouped by session.
+
+        Returns {} when the table or its created_at column is absent (older CLI
+        versions); sessions then fall back to totals on their start date.
+        """
+        try:
+            rows = conn.execute("""
+                SELECT session_id, model, agent_id, created_at,
+                       COALESCE(input_tokens, 0)       AS input_tokens,
+                       COALESCE(output_tokens, 0)      AS output_tokens,
+                       COALESCE(cache_read_tokens, 0)  AS cache_read_tokens,
+                       COALESCE(cache_write_tokens, 0) AS cache_write_tokens,
+                       COALESCE(reasoning_tokens, 0)   AS reasoning_tokens
+                FROM assistant_usage_events
+                WHERE created_at IS NOT NULL
+            """).fetchall()
+        except sqlite3.OperationalError:
+            return {}
+        by_session: dict[str, list[sqlite3.Row]] = {}
+        for r in rows:
+            by_session.setdefault(r["session_id"], []).append(r)
+        return by_session
 
     @staticmethod
     def _query_context_peaks(
@@ -128,9 +165,13 @@ class CopilotCliCollector:
         end_ts: str | None,
         project: str | None,
         peaks: dict[tuple[str, str], int],
+        daily: list[sqlite3.Row],
     ) -> Iterator[SessionRecord]:
         events_path = self._home / "session-state" / session_id / "events.jsonl"
         if not events_path.exists():
+            # Timestamped usage rows alone are enough to build day records.
+            if daily:
+                yield from self._from_daily(daily, session_id, date_str, project, {})
             return
 
         # Single pass: prefer the shutdown event (per-model breakdown), while
@@ -141,6 +182,7 @@ class CopilotCliCollector:
         turns = 0
         model = UNKNOWN_MODEL
         tool_calls_by_model: dict[str, int] = {}
+        tool_calls_by_day: dict[tuple[str, str], int] = {}
         shutdown_payload: dict | None = None
 
         for line in events_path.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -159,6 +201,9 @@ class CopilotCliCollector:
             if event_type == "tool.execution_complete":
                 tool_model = payload.get("model") or model
                 tool_calls_by_model[tool_model] = tool_calls_by_model.get(tool_model, 0) + 1
+                tool_day = to_date(event.get("timestamp"))
+                day_key = (tool_model, tool_day.isoformat() if tool_day else date_str)
+                tool_calls_by_day[day_key] = tool_calls_by_day.get(day_key, 0) + 1
                 continue
             if event_type != "assistant.message":
                 continue
@@ -173,6 +218,10 @@ class CopilotCliCollector:
             totals["cache_read_tokens"] += usage.get("cacheReadTokens", 0)
             totals["cache_creation_tokens"] += usage.get("cacheWriteTokens", 0)
             totals["reasoning_tokens"] += usage.get("reasoningTokens", 0)
+
+        if daily:
+            yield from self._from_daily(daily, session_id, date_str, project, tool_calls_by_day)
+            return
 
         if shutdown_payload is not None:
             yield from self._from_shutdown(
@@ -194,6 +243,60 @@ class CopilotCliCollector:
             context_peak_tokens=peaks.get((session_id, model), 0),
             **totals,
         )
+
+    def _from_daily(
+        self, rows: list[sqlite3.Row], session_id: str, date_str: str,
+        project: str | None, tool_calls: dict[tuple[str, str], int],
+    ) -> Iterator[SessionRecord]:
+        buckets: dict[tuple[str, str], dict] = {}
+        for r in rows:
+            ts = _utc(r["created_at"])
+            day = to_date(ts)
+            key = (r["model"] or UNKNOWN_MODEL, day.isoformat() if day else date_str)
+            b = buckets.setdefault(key, dict(
+                turns=0, input_tokens=0, output_tokens=0, cache_read_tokens=0,
+                cache_creation_tokens=0, reasoning_tokens=0, context_peak_tokens=0,
+                first=ts, last=ts))
+            # input_tokens includes cache reads and writes; store the uncached part.
+            b["input_tokens"] += max(
+                r["input_tokens"] - r["cache_read_tokens"] - r["cache_write_tokens"], 0)
+            b["output_tokens"] += r["output_tokens"]
+            b["cache_read_tokens"] += r["cache_read_tokens"]
+            b["cache_creation_tokens"] += r["cache_write_tokens"]
+            b["reasoning_tokens"] += r["reasoning_tokens"]
+            if r["agent_id"] is None:  # main conversation only, matching _query_context_peaks
+                b["turns"] += 1
+                b["context_peak_tokens"] = max(
+                    b["context_peak_tokens"], r["input_tokens"] + r["output_tokens"])
+            b["first"], b["last"] = min(b["first"], ts), max(b["last"], ts)
+        # Tool events may lack a model (or precede the first assistant message),
+        # so attach unmatched counts to the usage model of the same day.
+        by_day: dict[str, list[str]] = {}
+        for model, day in sorted(buckets):
+            by_day.setdefault(day, []).append(model)
+        placed: dict[tuple[str, str], int] = {}
+        for (tool_model, day), count in sorted(tool_calls.items()):
+            if (tool_model, day) in buckets:
+                key = (tool_model, day)
+            elif day in by_day:
+                key = (by_day[day][0], day)
+            else:
+                key = (tool_model, day)
+            placed[key] = placed.get(key, 0) + count
+        for key in placed:
+            if key not in buckets:  # tool-only day: no usage rows
+                buckets[key] = dict(
+                    turns=0, input_tokens=0, output_tokens=0, cache_read_tokens=0,
+                    cache_creation_tokens=0, reasoning_tokens=0, context_peak_tokens=0,
+                    first=None, last=None)
+        for (model, day), b in sorted(buckets.items()):
+            first, last = b.pop("first"), b.pop("last")
+            yield SessionRecord(
+                session_id=session_id, source=self.source, model=model, date=day,
+                start_ts=to_local_iso(first) if first else None,
+                end_ts=to_local_iso(last) if last else None, project=project,
+                tool_calls=placed.get((model, day), 0), **b,
+            )
 
     def _from_shutdown(
         self, payload: dict, session_id: str,

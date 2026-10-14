@@ -332,3 +332,78 @@ def test_tool_event_after_shutdown_still_counted(tmp_path):
     ])
     r = list(CopilotCliCollector(home).collect(date(2026, 6, 10)))[0]
     assert r.tool_calls == 2
+
+
+def _add_timed_usage(home: Path, rows: list[tuple]) -> None:
+    """rows: (session_id, agent_id, model, created_at, input, output, cache_read, cache_write)"""
+    conn = sqlite3.connect(home / "session-store.db")
+    conn.execute("""
+        CREATE TABLE assistant_usage_events (
+            session_id TEXT, turn_index INTEGER, agent_id TEXT, model TEXT,
+            input_tokens INTEGER, output_tokens INTEGER,
+            cache_read_tokens INTEGER, cache_write_tokens INTEGER,
+            reasoning_tokens INTEGER, created_at TEXT
+        )
+    """)
+    conn.executemany(
+        "INSERT INTO assistant_usage_events VALUES (?, 0, ?, ?, ?, ?, ?, ?, 0, ?)",
+        [(s, a, m, i, o, cr, cw, ts) for s, a, m, ts, i, o, cr, cw in rows],
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_usage_events_split_session_by_day(tmp_path):
+    home = _make_home(tmp_path)
+    _add_session(home, "s1", "/work/x", "owner/x",
+                 "2026-10-08T10:00:00.000Z", "2026-10-09T11:00:00.000Z")
+    _add_timed_usage(home, [
+        ("s1", None, "model-a", "2026-10-08 10:00:00", 1000, 50, 600, 100),
+        ("s1", None, "model-a", "2026-10-09T10:00:00Z", 500, 20, 0, 0),
+    ])
+    _write_events(home, "s1", [
+        {"type": "tool.execution_complete", "timestamp": "2026-10-09T10:00:05Z",
+         "data": {"model": "model-a"}},
+        _shutdown({"model-a": {"turns": 2, "input": 1500, "output": 70}}),
+    ])
+    records = sorted(CopilotCliCollector(home).collect(date(2026, 10, 9)), key=lambda r: r.date)
+    assert [(r.date, r.input_tokens, r.cache_read_tokens, r.cache_creation_tokens,
+             r.output_tokens, r.turns, r.tool_calls, r.context_peak_tokens) for r in records] == [
+        ("2026-10-08", 300, 600, 100, 50, 1, 0, 1050),
+        ("2026-10-09", 500, 0, 0, 20, 1, 1, 520),
+    ]
+
+
+def test_subagent_usage_counts_tokens_but_not_turns_or_peak(tmp_path):
+    home = _make_home(tmp_path)
+    _add_session(home, "s1", "/work/x", "owner/x",
+                 "2026-10-08T10:00:00.000Z", "2026-10-08T11:00:00.000Z")
+    _add_timed_usage(home, [
+        ("s1", None, "model-a", "2026-10-08 10:00:00", 1000, 50, 0, 0),
+        ("s1", "agent-1", "model-a", "2026-10-08 10:05:00", 9000, 900, 0, 0),
+    ])
+    _write_events(home, "s1", [_shutdown({"model-a": {"turns": 1, "input": 10000, "output": 950}})])
+    [r] = list(CopilotCliCollector(home).collect(date(2026, 10, 8)))
+    assert (r.input_tokens, r.output_tokens, r.turns, r.context_peak_tokens) == (10000, 950, 1, 1050)
+
+
+def test_untagged_tool_calls_attach_to_the_days_usage_model(tmp_path):
+    home = _make_home(tmp_path)
+    _add_session(home, "s1", "/work/x", "owner/x",
+                 "2026-10-08T10:00:00.000Z", "2026-10-08T11:00:00.000Z")
+    _add_timed_usage(home, [("s1", None, "model-a", "2026-10-08 10:00:00", 100, 10, 0, 0)])
+    _write_events(home, "s1", [
+        {"type": "tool.execution_complete", "timestamp": "2026-10-08T10:00:05Z", "data": {}},
+    ])
+    [r] = list(CopilotCliCollector(home).collect(date(2026, 10, 8)))
+    assert (r.model, r.tool_calls) == ("model-a", 1)
+
+
+def test_timed_usage_without_events_file_still_yields_rows(tmp_path):
+    home = _make_home(tmp_path)
+    _add_session(home, "s1", "/work/x", "owner/x",
+                 "2026-10-08T10:00:00.000Z", "2026-10-08T11:00:00.000Z")
+    _add_timed_usage(home, [("s1", None, "model-a", "2026-10-08 10:00:00", 100, 10, 0, 0)])
+    [r] = list(CopilotCliCollector(home).collect(date(2026, 10, 8)))
+    assert (r.model, r.input_tokens, r.tool_calls) == ("model-a", 100, 0)
+
