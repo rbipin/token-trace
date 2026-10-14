@@ -10,6 +10,7 @@ readme = "README.md"
 license = "LicenseRef-PolyForm-Shield-1.0.0"
 license-files = ["LICENSE.md"]
 requires-python = ">=3.11"
+dependencies = ["whimsy>=0.1,<1"]
 keywords = ["claude", "copilot", "codex", "tokens", "ai", "usage", "tracker"]
 
 [project.scripts]

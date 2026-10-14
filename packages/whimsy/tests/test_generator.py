@@ -1,9 +1,9 @@
-"""Tests for the whimsy name generator. Imports only from src.whimsy."""
+"""Tests for the whimsy name generator. Imports only from whimsy."""
 import random
 import re
 
-from src.whimsy import generate_name
-from src.whimsy.wordlists import ADJECTIVES, SURNAMES
+from whimsy import generate_name
+from whimsy.wordlists import ADJECTIVES, SURNAMES
 
 NAME_RE = re.compile(r"^[a-z]+_[a-z_]+\d*$")
 

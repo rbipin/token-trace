@@ -1,3 +1,5 @@
 # Runtime: standard library only (sqlite3, json, pathlib, argparse, re).
 # Development/testing only:
 pytest>=7.0
+# In-repo whimsy package (declared dependency of tokentracer; PyPI copy is used when installed)
+-e packages/whimsy

@@ -16,7 +16,7 @@ from contextlib import closing
 from pathlib import Path
 import sys
 
-from .whimsy import generate_name
+from whimsy import generate_name
 
 _CREATE_IDENTITIES = """
 CREATE TABLE IF NOT EXISTS project_identities (
