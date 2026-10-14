@@ -20,7 +20,7 @@ extension points are included throughout.
 ## Overview
 
 TokenTracer is a local-first pipeline. **Collectors** read session artifacts
-that AI CLIs already write to disk, normalize them into `SessionRecord`s, and
+that supported CLI/editor surfaces already write to disk, normalize them into `SessionRecord`s, and
 a **pipeline** deduplicates them, runs them through an ordered **middleware**
 chain (e.g. model-name normalization), and writes them to **stores** (always
 a local SQLite database, optionally remote sinks such as Supabase). The
@@ -34,11 +34,13 @@ flowchart LR
     subgraph Sources["On-disk session data"]
         CP["~/.copilot/<br/>session-store.db + events.jsonl"]
         CL["~/.claude/projects/<br/>**/*.jsonl"]
+        CX["CODEX_HOME<br/>active/archive rollouts"]
     end
 
     subgraph Collectors["src/collectors/"]
         C1[CopilotCliCollector]
         C2[ClaudeCliCollector]
+        C3[CodexCliCollector]
     end
 
     PR["ProjectNameResolver<br/>src/project_identity.py"]
@@ -55,6 +57,10 @@ flowchart LR
 
     CP --> C1
     CL --> C2
+    CX --> C3
+    C3 --> PR
+    PR --> C3
+    C3 --> P
     C1 --> PR
     C2 --> PR
     PR --> PI
@@ -85,6 +91,38 @@ flowchart LR
 | `src/whimsy/` | Standalone stdlib-only `generate_name()` package for masked project names |
 
 ---
+
+## Daily session rows
+
+The local `sessions` table stores one row per `(session_id, source, model,
+date)`, where `date` is the machine's local calendar day of the activity (the
+session's start date when a source only reports a total). All non-key columns
+describe that day only; session-level views aggregate with `SUM` for counts,
+`MIN(start_ts)`, `MAX(end_ts)`, and `MAX(context_peak_tokens)`.
+
+Every collector emits day rows and selects sessions by **recent activity** (file
+mtime, or Copilot `updated_at`), not by start date. `SqliteStore.upsert()` groups
+records by `(session_id, source)` and, in one transaction, replaces all stored
+rows of any session whose row set changed, clearing that session's `sync_log`
+entries so the whole session is re-pushed. Unchanged sessions are not touched.
+
+- **Claude** buckets each assistant message by the local date of its
+  `timestamp`; untimed messages go to the session's start day.
+- **Codex** (`CodexCliCollector.scan()`) parses active and archived rollouts,
+  deduplicates usage events in memory (response IDs and fingerprints, fork
+  ownership, snapshot-delta fallback), then `collect()` aggregates them per
+  local day. Tool calls are bucketed by their own row's timestamp. Ambiguous
+  parent snapshots are dropped with a collect-time warning. `Paths.codex_home`
+  defaults to `~/.codex` and respects `CODEX_HOME`.
+- **Copilot** buckets `assistant_usage_events` by the local date of `created_at`
+  (naive UTC) per model, with cache-exclusive input; without that table the
+  shutdown totals land on the start date.
+
+Reports and the dashboard read `sessions` directly: period filters apply to
+`date`, session views regroup day rows by `(session_id, source, model)` inside
+the period, session counts are distinct `(source, session_id)`, and
+`--detailed` lists raw day rows. Remote stores replace whole sessions, so
+`unsynced_for()` returns every row of any session that has an unsynced row.
 
 ## Collect flow
 
@@ -150,7 +188,7 @@ stable docker-style masked name tied to that same guid.
 ### The record model
 
 `SessionRecord` (`src/models.py`) is a **frozen dataclass** — one row per
-`(session_id, source, model)`. Because it's frozen, nothing may mutate a
+`(session_id, source, model, date)`. Because it's frozen, nothing may mutate a
 record in place; transforms (including middleware `process()`) must build a
 new instance with `dataclasses.replace()`. Fields: `date`, `start_ts`, `end_ts`,
 `project`, `turns`, `tool_calls`, `input_tokens`, `output_tokens`,
@@ -434,18 +472,23 @@ absent alias file never crashes CLI startup.
 in a repo checkout; override with `--db`).
 
 - **`sessions` table** — mirrors `SessionRecord`, with
-  `PRIMARY KEY (session_id, source, model)` and `INSERT OR REPLACE` upserts.
+  `PRIMARY KEY (session_id, source, model, date)` and replace-per-session upserts
+  (see [Daily session rows](#daily-session-rows)).
 - **`project_identities` table** — also lives in `usage.db`, keyed by a
   normalized (case-insensitive, trimmed) `cwd_key`, with stable `guid` and
   optional `whimsical_name` columns. It is local-only: `sync_log`,
   `unsynced_for()`, and remote-store upserts never reference it. Inspect it
   with `python3 tracker.py projects`.
-- **`sync_log` table** — `PRIMARY KEY (session_id, source, model,
+- **`sync_log` table** — `PRIMARY KEY (session_id, source, model, date,
   store_name)`; tracks which rows have been pushed to which remote store,
   so `sync` is incremental and idempotent per store.
 - **Migration** — on first connect, a legacy `usage` / `daily_activity`
   table from older versions is dropped with a warning asking the user to
   re-collect (`collect --lookback 90`).
+- **Daily-key migration** — databases created before daily rows are rebuilt on
+  first connect so `date` joins the primary keys of `sessions` and `sync_log`
+  (orphan sync entries are dropped), and the retired usage-event ledger
+  tables and views are dropped.
 
 The whimsical-name implementation lives in `src/whimsy/`, a self-contained
 stdlib-only package with one public function, `generate_name(existing=None,
@@ -475,7 +518,7 @@ keeps the package extractable into its own repository later.
   empty if never synced). Overrides `--summary` and `--by-project`; ignores
   `--period`; `--model` filter still applies; works with `--json`.
 - **Cache hit %** = cache reads as a share of total input-side tokens; a
-  header line reports overall cache efficiency (cache reads cost ~10% of
+  header line reports cache efficiency for the selected period and models (cache reads cost ~10% of
   regular input tokens).
 - `--model <name>` filters, `--json` emits machine-readable output.
 - **Grouping and filtering use `COALESCE(canonical_model, model)`** — every
@@ -546,8 +589,12 @@ The `collect` command also fans out to configured remote stores directly
 collected while offline.
 
 **Built-in Supabase store** (`src/stores/supabase.py`) — upserts into a
-`token_sessions` table with `on_conflict="session_id,source,model"`
-(mirroring the local primary key). The client is created lazily on first
+`token_sessions` table with `on_conflict="session_id,source,model,date"`
+(mirroring the local key). Before the upsert it deletes the remote rows of each
+pushed session (chunks of 100 ids), so days dropped by a re-collect do not
+linger; apply `docs/migrations/2026-10-12-daily-session-rows.sql` first. The
+replace is not atomic over REST — a failed upsert leaves the rows unsynced
+locally and the next `collect`/`sync` repairs the remote. The client is created lazily on first
 upsert; requires the optional dependency `supabase>=2.0`
 (`pip install tokentracer[supabase]`). The upserted payload includes
 `tool_calls`, `reasoning_tokens`, and `context_peak_tokens`; the remote
@@ -560,6 +607,27 @@ url = "${SUPABASE_URL}"
 key = "${SUPABASE_KEY}"      # service role key (bypasses RLS)
 table = "token_sessions"     # optional, this is the default
 ```
+
+### Verifying and repairing sync
+
+Use this after a long `collect --lookback N` or when local and remote totals
+disagree. Back up `~/.tokentracer/usage.db` first.
+
+- **Idempotency** — snapshot `sessions`
+  (`sqlite3 usage.db "select * from sessions order by session_id,source,model,date"`),
+  run `collect --lookback N` twice, and compare. The second run must not change
+  the snapshot. The first run may change rows of sessions still open and of
+  sessions stored before the daily-row split.
+- **Local vs remote** — compare by the key `(session_id, source, model, date)`
+  with a read-only select. Filter remote rows by `context`: a remote table can
+  hold rows from other machines (for example `work`) that have no local
+  session. Compare `start_ts`/`end_ts` as instants; the remote stores UTC.
+- **Missing remote rows** — `sync_log` can mark a row synced for a store while
+  the remote row is gone. `sync` trusts `sync_log`, so it reports 0 pending.
+  Delete that store's `sync_log` rows for the missing keys
+  (`DELETE FROM sync_log WHERE store_name = ? AND session_id = ? AND source = ? AND model = ? AND date = ?`),
+  then run `tracker.py sync`. The dry-run count can exceed the number of
+  deleted rows because sync pushes every row of a session with an unsynced row.
 
 ---
 

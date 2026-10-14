@@ -1,7 +1,7 @@
 <h1 align="center">Token Trace</h1>
 
 <p align="center">
-  A local, periodic tracker for your AI tool token usage — session-grain records from GitHub Copilot CLI and Claude Code CLI, stored in SQLite, rolled up however you want.
+  A local, periodic tracker for your AI tool token usage — session summaries from GitHub Copilot, Claude Code, and Codex, plus measured Codex daily usage, stored in SQLite.
 </p>
 
 <p align="center">
@@ -21,9 +21,7 @@
 ## Overview
 
 <!-- description -->
-Token Trace records AI tool activity at a **session grain** (one row per
-session per model) so you can roll it up by day, month, or year — and drill
-into individual sessions or projects.
+Token Trace keeps **one row per session, model, and local day**, so day, month, and year reports reflect the days tokens were actually used. Sessions whose logs are no longer on disk keep the single row first recorded for them, dated on their start date.
 <!-- /description -->
 
 <!-- purpose -->
@@ -34,21 +32,20 @@ This project is my answer to that gap: a lightweight local collector that pulls 
 
 **Built entirely with Claude Code** — requirements, direction, and corrections were provided by me; implementation was handled by Claude.
 
-> **Why only CLI surfaces?**
+> **Which surfaces are supported?**
 >
-> These are the only surfaces that write **actual token counts** to disk.
-> Copilot CLI records them via the `session.shutdown` event's `modelMetrics`.
-> Claude Code CLI records them in per-conversation JSONL files under
-> `~/.claude/projects/`. VS Code and web UIs render token data live but do not
-> persist it locally. See `docs/plans/2026-06-15-copilot-usage-tracker-design.md`
-> for the original rationale.
+> Collection follows locally persisted token data. Copilot CLI writes shutdown
+> metrics; Claude Code writes conversation JSONL usage. Codex CLI and editor
+> sessions are supported when their rollouts persist accounting records under
+> `CODEX_HOME`. Web or desktop sessions without local accounting logs are outside
+> the filesystem collector's scope.
 
 ---
 
 ## Outcome
 
 <!-- outcome -->
-This usage analytics tool provides exact token counts per session, model, and tool, along with cache efficiency metrics and estimated cost savings. Key features include:
+This usage analytics tool reports locally recorded token counts per session, model, and tool, along with cache efficiency metrics and estimated cost savings. Key features include:
 
 - Tracks tool calls per session (Copilot tool events / Claude tool_use blocks)
 - Tracks context peak — the largest single-request token footprint per session (main conversation only; models used solely by subagents show 0)
@@ -81,6 +78,39 @@ This usage analytics tool provides exact token counts per session, model, and to
 |---|---|---|
 | Copilot CLI | `~/.copilot/session-store.db` + `session-state/<id>/events.jsonl` | sessions, turns, per-model token counts (input, output, cache read/write, reasoning), tool calls, context peak tokens |
 | Claude Code CLI | `~/.claude/projects/**/*.jsonl` | per-session token counts (input, output, cache read/write), tool calls, context peak tokens |
+| Codex CLI / editor | `${CODEX_HOME:-~/.codex}/sessions/**/*.jsonl` and `archived_sessions/**/*.jsonl` | response usage, measured local days, raw models, caches, reasoning, request footprint, tool calls |
+
+### Daily usage rows
+
+TokenTracer stores one row per `(session, source, model, local day)`. A session
+that runs on two days has two rows, and its lifetime total is the sum of its
+rows. Copilot, Claude, and Codex all split by day; if a source only reports a
+session total, the whole total goes on the session's start date. Each `collect`
+re-reads every recently modified log and replaces all stored rows of those
+sessions, so an old session resumed today is included by the normal scheduled
+`collect --lookback 1`. Logs that no longer exist on disk cannot be re-split, so
+history older than your retained logs (Claude keeps about 30 days by default)
+stays as it was first recorded.
+
+`CODEX_HOME` overrides `~/.codex`; an explicitly injected `Paths.codex_home`
+retains precedence in embedded use. Codex collection discovers both active and
+archived rollouts, selects recently modified files, and imports their complete
+available histories. Session identity comes from source metadata, so archive
+moves and renamed files do not create duplicates.
+
+```bash
+tokentracer collect --lookback 30
+tokentracer report --period all --summary --json
+tokentracer sync --dry-run
+```
+
+Input excludes cached input and cache creation, which have their own columns.
+Reasoning is included in output and is never added twice. Raw model identity
+stays intact; optional `[codex_cli]` aliases affect display only. Explicit
+thread ownership prevents copied fork responses from being counted again. When a
+known parent has only cumulative accounting and child responses exist, the
+parent snapshot ownership is ambiguous: only supported response usage is
+reported and `collect` prints a warning.
 
 ---
 
@@ -124,7 +154,7 @@ model regardless of which tool collected the session. See
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#middleware) for how the
 middleware system works and how to add a new one.
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full architecture: collect data flow, exact source files and schemas, storage, sync, and extension points. [docs/DESIGN-HISTORY.md](docs/DESIGN-HISTORY.md) records the design decisions that shaped the project.
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full architecture: collect data flow, exact source files and schemas, storage, sync, and extension points. [docs/DESIGN-HISTORY.md](docs/DESIGN-HISTORY.md) records the design decisions that shaped the project. [changelog.md](changelog.md) tracks unreleased changes.
 
 ---
 
@@ -154,13 +184,14 @@ TokenTracer/
 │  ├─ repo_identity.py       # resolve_repo_slug(cwd) — walks up to .git, parses origin remote
 │  ├─ collectors/            # one collector per AI tool surface
 │  │  ├─ base.py            # ActivityCollector protocol + to_date / to_local_iso helpers
-│  │  ├─ copilot_cli.py     # Copilot CLI — one record per (session, model)
+│  │  ├─ codex_cli.py       # Codex CLI/editor — one record per (session, model, local day)
+│  │  ├─ copilot_cli.py     # Copilot CLI — one record per (session, model, local day)
 │  │  └─ claude_cli.py      # Claude Code CLI — one record per JSONL session
 │  ├─ whimsy/                # Standalone docker-style masked-name generator (extractable, stdlib-only)
 │  ├─ stores/                # pluggable store backends (entry-point registry)
 │  │  ├─ __init__.py        # SessionStore protocol
 │  │  ├─ registry.py        # store discovery + instantiation (env var expansion)
-│  │  ├─ sqlite.py          # SqliteStore — local db, idempotent upsert, sync tracking
+│  │  ├─ sqlite.py          # SqliteStore — local db, daily rows, replace-per-session upsert, sync tracking
 │  │  └─ supabase.py        # SupabaseStore — remote Supabase sink
 │  ├─ report.py              # UsageReporter (day/month/year, cache efficiency, --summary, --by-project, --detailed)
 │  ├─ pipeline.py            # fluent TrackerPipeline — parallel collectors, .middlewares() chain
@@ -432,6 +463,7 @@ create table token_sessions (
   session_id text not null,
   source text not null,
   model text not null,
+  canonical_model text,
   date date,
   start_ts timestamptz,
   end_ts timestamptz,
@@ -445,7 +477,7 @@ create table token_sessions (
   reasoning_tokens bigint default 0,
   context_peak_tokens bigint default 0,
   context text default 'personal',
-  primary key (session_id, source, model)
+  unique (session_id, source, model, date)
 );
 ```
 
@@ -456,6 +488,19 @@ ALTER TABLE token_sessions ADD COLUMN tool_calls bigint DEFAULT 0;
 ALTER TABLE token_sessions ADD COLUMN reasoning_tokens bigint DEFAULT 0;
 ALTER TABLE token_sessions ADD COLUMN context_peak_tokens bigint DEFAULT 0;
 ```
+
+Daily session rows need a remote key that includes `date`. If your table was
+created before daily rows, apply
+[`docs/migrations/2026-10-12-daily-session-rows.sql`](docs/migrations/2026-10-12-daily-session-rows.sql)
+in the Supabase SQL editor **before** upgrading, adapting the table name for
+custom configurations. The migration is never applied by collection or
+synchronization. When a session changes, TokenTracer deletes that session's
+remote rows and upserts the fresh day rows (conflict key
+`session_id,source,model,date`). The replace is not atomic over REST: if the
+upsert fails, the rows stay unsynced locally and the next `collect` or `sync`
+repairs the remote. Remove any leftover `usage_table` key from
+`[stores.supabase]`; it is no longer used. No prompt, tool arguments/output,
+reasoning text, or raw project path is included in the synchronized payload.
 
 Then:
 
@@ -472,8 +517,14 @@ tokentracer sync --dry-run   # preview
 tokentracer sync             # push
 ```
 
-Rows are upserted with conflict key `(session_id, source, model)` — the same
-primary key as the local database — so syncing is idempotent too.
+Rows are upserted with conflict key `(session_id, source, model, date)` — the same
+key as the local database — so syncing is idempotent too. Before each push the
+store deletes the remote rows of the sessions being pushed (see the Supabase
+section above).
+
+If local and remote totals disagree (for example `sync --dry-run` shows 0
+pending but remote rows are missing), see
+[Verifying and repairing sync](docs/ARCHITECTURE.md#verifying-and-repairing-sync).
 
 ### Writing your own store
 

@@ -1,7 +1,7 @@
 """Tests for SupabaseStore."""
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -102,7 +102,7 @@ def test_upsert_uses_conflict_key():
         store.upsert([_rec()])
 
     kwargs = mock_client.table.return_value.upsert.call_args[1]
-    assert kwargs.get("on_conflict") == "session_id,source,model"
+    assert kwargs.get("on_conflict") == "session_id,source,model,date"
 
 
 def test_upsert_targets_correct_table():
@@ -161,3 +161,24 @@ def test_upsert_includes_tool_and_token_detail_columns():
     assert rows[0]["tool_calls"] == 7
     assert rows[0]["reasoning_tokens"] == 42
     assert rows[0]["context_peak_tokens"] == 2100
+
+
+def test_upsert_deletes_pushed_sessions_before_upsert():
+    mock_client = MagicMock()
+    with patch("src.stores.supabase._create_client", return_value=mock_client):
+        _make_store().upsert([_rec("s1"), _rec("s2"), _rec("s1", source="codex_cli")])
+    table = mock_client.table.return_value
+    assert [name for name, *_ in table.mock_calls if name in ("delete", "upsert")] == [
+        "delete", "delete", "upsert"]
+    eq = table.delete.return_value.eq
+    assert eq.call_args_list == [call("source", "claude"), call("source", "codex_cli")]
+    assert eq.return_value.in_.call_args_list == [
+        call("session_id", ["s1", "s2"]), call("session_id", ["s1"])]
+
+
+def test_large_push_deletes_in_chunks():
+    mock_client = MagicMock()
+    with patch("src.stores.supabase._create_client", return_value=mock_client):
+        _make_store().upsert([_rec(f"s{i}") for i in range(250)])
+    in_ = mock_client.table.return_value.delete.return_value.eq.return_value.in_
+    assert [len(c.args[1]) for c in in_.call_args_list] == [100, 100, 50]

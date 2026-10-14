@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, Sequence
 
+from .stores.sqlite import SqliteStore
+
 _PERIOD_SQL = {
     "all":   "strftime('%Y-%m', date)",
     "day":   "date",
@@ -62,7 +64,7 @@ class SessionsDetailedView:
                 turns,
                 tool_calls,
                 input_tokens + cache_creation_tokens + cache_read_tokens AS denom
-            FROM sessions
+            FROM period_sessions
             WHERE {ctx.date_filter}{ctx.model_filter}
             ORDER BY COALESCE(start_ts, date) DESC
         """, ctx.params).fetchall()
@@ -212,10 +214,10 @@ class SessionsListView:
                 end_ts,
                 COALESCE(canonical_model, model)                             AS model,
                 turns,
-                input_tokens + cache_creation_tokens + cache_read_tokens    AS total_tokens,
+                input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens AS total_tokens,
                 cache_read_tokens,
                 input_tokens + cache_creation_tokens + cache_read_tokens    AS denom
-            FROM sessions
+            FROM period_sessions
             WHERE {ctx.date_filter}{ctx.model_filter}
             ORDER BY COALESCE(start_ts, date) DESC
         """, ctx.params).fetchall()
@@ -283,6 +285,7 @@ class FullDumpView:
                         WHERE l.session_id = sessions.session_id
                           AND l.source = sessions.source
                           AND l.model = sessions.model
+                          AND l.date = sessions.date
                         ORDER BY l.store_name
                     )
                 ), '')                  AS synced
@@ -346,18 +349,19 @@ class UsageReporter:
     db_path: Path
 
     def _connect(self) -> sqlite3.Connection:
+        SqliteStore(self.db_path).close()
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         return conn
 
-    def _cache_efficiency(self, conn: sqlite3.Connection) -> tuple[float, float]:
-        row = conn.execute("""
+    def _cache_efficiency(self, conn: sqlite3.Connection, where: str, params: list) -> tuple[float, float]:
+        row = conn.execute(f"""
             SELECT
                 COALESCE(SUM(input_tokens), 0),
                 COALESCE(SUM(cache_creation_tokens), 0),
                 COALESCE(SUM(cache_read_tokens), 0)
-            FROM sessions
-        """).fetchone()
+            FROM sessions WHERE {where}
+        """,params).fetchone()
         total = row[0] + row[1] + row[2]
         if total == 0:
             return 0.0, 0.0
@@ -373,7 +377,6 @@ class UsageReporter:
         models: Sequence[str] | None,
         as_json: bool,
     ) -> ReportContext:
-        hit_rate, cost_saved = self._cache_efficiency(conn)
         date_filter = _DATE_RANGE_SQL[period]
         model_filter = ""
         params: list = []
@@ -381,6 +384,7 @@ class UsageReporter:
             placeholders = ",".join("?" * len(models))
             model_filter = f" AND COALESCE(canonical_model, model) IN ({placeholders})"
             params.extend(models)
+        hit_rate, cost_saved = self._cache_efficiency(conn, date_filter + model_filter, params)
         return ReportContext(
             conn=conn,
             period=period,
@@ -405,7 +409,24 @@ class UsageReporter:
             raise ValueError(f"period must be one of {list(_PERIOD_SQL)}")
         conn = self._connect()
         try:
-            ctx = self._make_context(conn, period, models, as_json)
+            ctx = self._make_context(conn, 'all' if detailed else period, models, as_json)
+            conn.execute(
+                f"CREATE TEMP TABLE scoped_usage AS SELECT * FROM sessions "
+                f"WHERE {ctx.date_filter}{ctx.model_filter}", ctx.params)
+            # One row per session/model inside the period: day rows are summed,
+            # timestamps span the period's first and last activity.
+            conn.execute("""CREATE TEMP VIEW period_sessions AS
+                SELECT session_id, source, model, MAX(canonical_model) AS canonical_model, MIN(date) AS date,
+                    MAX(project) AS project,
+                    MIN(start_ts) AS start_ts, MAX(end_ts) AS end_ts,
+                    SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens,
+                    SUM(cache_read_tokens) AS cache_read_tokens,
+                    SUM(cache_creation_tokens) AS cache_creation_tokens,
+                    SUM(reasoning_tokens) AS reasoning_tokens,
+                    MAX(context_peak_tokens) AS context_peak_tokens,
+                    SUM(turns) AS turns, SUM(tool_calls) AS tool_calls
+                FROM scoped_usage GROUP BY source, session_id, model
+            """)
             return _pick_strategy(summary, by_project, period, detailed).render(ctx)
         finally:
             conn.close()

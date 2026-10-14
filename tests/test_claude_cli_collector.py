@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 from src.collectors.claude_cli import ClaudeCliCollector
@@ -89,9 +89,11 @@ def test_cache_tokens_summed(tmp_path):
 
 
 def test_since_filter_excludes_old_session(tmp_path):
-    _write_session(tmp_path, "sess-old", [
-        _asst("2026-07-01T10:00:00.000Z", "claude-sonnet-4-6", 100, 50),
-    ])
+    import os
+    _write_session(tmp_path, "s-old", [_asst("2026-06-01T10:00:00.000Z", "claude-sonnet-4-6", 100, 50)])
+    old = (tmp_path / "proj-1" / "s-old.jsonl")
+    stamp = datetime(2026, 6, 1, 12).timestamp()
+    os.utime(old, (stamp, stamp))
     records = list(ClaudeCliCollector(tmp_path).collect(date(2026, 7, 3)))
     assert records == []
 
@@ -208,3 +210,32 @@ def test_reasoning_tokens_stay_zero(tmp_path):
     ])
     r = list(ClaudeCliCollector(tmp_path).collect(date(2026, 7, 3)))[0]
     assert r.reasoning_tokens == 0
+
+
+def test_session_spanning_two_days_yields_one_row_per_day(tmp_path):
+    _write_session(tmp_path, "s1", [
+        _asst("2026-10-08T10:00:00Z", "claude-sonnet-4-6", 100, 10),
+        _asst("2026-10-08T11:00:00Z", "claude-sonnet-4-6", 200, 20),
+        _asst("2026-10-09T10:00:00Z", "claude-sonnet-4-6", 50, 5),
+    ])
+    records = sorted(ClaudeCliCollector(tmp_path).collect(date(2026, 10, 1)), key=lambda r: r.date)
+    assert [(r.date, r.input_tokens, r.output_tokens, r.turns, r.context_peak_tokens)
+            for r in records] == [("2026-10-08", 300, 30, 2, 220), ("2026-10-09", 50, 5, 1, 55)]
+    assert records[0].start_ts.startswith("2026-10-08")
+
+
+def test_old_session_touched_recently_yields_all_days(tmp_path):
+    _write_session(tmp_path, "s1", [
+        _asst("2026-09-01T10:00:00Z", "m", 100, 0),
+        _asst("2026-10-09T10:00:00Z", "m", 50, 0),
+    ])
+    records = list(ClaudeCliCollector(tmp_path).collect(date(2026, 10, 9)))
+    assert sorted((r.date, r.input_tokens) for r in records) == [("2026-09-01", 100), ("2026-10-09", 50)]
+
+
+def test_untimed_assistant_usage_lands_on_start_day(tmp_path):
+    untimed = _asst("2026-10-08T10:00:00Z", "m", 7, 0)
+    del untimed["timestamp"]
+    _write_session(tmp_path, "s1", [_asst("2026-10-08T10:00:00Z", "m", 100, 0), untimed])
+    records = list(ClaudeCliCollector(tmp_path).collect(date(2026, 10, 1)))
+    assert [(r.date, r.input_tokens, r.turns) for r in records] == [("2026-10-08", 107, 2)]

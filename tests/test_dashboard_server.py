@@ -97,3 +97,21 @@ def test_static_index_served(running_server):
 def test_static_path_traversal_blocked(running_server):
     status, _ = _get(running_server, "/../../etc/passwd")
     assert status in (403, 404)
+
+
+def test_server_prepares_pre_feature_database_before_first_query(tmp_path):
+    import sqlite3
+    from src.stores.sqlite import _CREATE_SESSIONS, _CREATE_SYNC_LOG
+    from src.dashboard import queries
+    path=tmp_path/'legacy.db'
+    with sqlite3.connect(path) as conn:
+        conn.execute(_CREATE_SESSIONS)
+        conn.execute(_CREATE_SYNC_LOG)
+        conn.execute("INSERT INTO sessions(session_id,source,model,date,input_tokens) VALUES ('legacy','claude_cli','m','2020-01-01',20)")
+    server=make_server(path,tmp_path,port=0)
+    try:
+        with sqlite3.connect(path) as conn:
+            conn.row_factory=sqlite3.Row
+            assert queries.summary(conn,'all')['total_tokens'] == 20
+    finally:
+        server.server_close()

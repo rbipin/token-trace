@@ -97,6 +97,9 @@ class Paths:
         default_factory=lambda: Path.home() / ".claude" / "projects"
     )
 
+    codex_home: Path = field(default_factory=lambda:
+        Path(os.environ.get('CODEX_HOME') or str(Path.home() / '.codex')).expanduser())
+
 
 @dataclass(frozen=True)
 class Config:
