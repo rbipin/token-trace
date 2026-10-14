@@ -9,6 +9,8 @@ Earlier releases are documented in the repository's Git tags and release notes.
 
 ## [Unreleased]
 
+## [1.0.7] - 2026-10-13
+
 ### Added
 
 - Codex CLI and editor usage collection from active and archived local rollouts,
@@ -19,6 +21,9 @@ Earlier releases are documented in the repository's Git tags and release notes.
 - Codex dashboard branding.
 - [Supabase migration](docs/migrations/2026-10-12-daily-session-rows.sql) that
   adds `date` to the remote key. Apply it manually before upgrading.
+- Project `.mcp.json` that registers the Supabase MCP server for Claude Code.
+- Documentation for verifying idempotent collection and repairing missing
+  remote rows ([Verifying and repairing sync](docs/ARCHITECTURE.md#verifying-and-repairing-sync)).
 
 ### Changed
 
@@ -57,4 +62,5 @@ Earlier releases are documented in the repository's Git tags and release notes.
 See the [design history](docs/DESIGN-HISTORY.md) for accounting decisions and
 links to the approved design and implementation plan.
 
-[Unreleased]: https://github.com/rbipin/TokenTrace/compare/v1.0.6...HEAD
+[Unreleased]: https://github.com/rbipin/TokenTrace/compare/v1.0.7...HEAD
+[1.0.7]: https://github.com/rbipin/TokenTrace/compare/v1.0.6...v1.0.7
