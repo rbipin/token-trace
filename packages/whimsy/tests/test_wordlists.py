@@ -1,5 +1,5 @@
-"""Tests for the whimsy word lists. Imports only from src.whimsy (standalone component)."""
-from src.whimsy.wordlists import ADJECTIVES, SURNAMES
+"""Tests for the whimsy word lists. Imports only from whimsy (standalone component)."""
+from whimsy.wordlists import ADJECTIVES, SURNAMES
 
 
 def test_adjectives_nonempty_and_lowercase():

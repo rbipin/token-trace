@@ -187,7 +187,6 @@ TokenTracer/
 │  │  ├─ codex_cli.py       # Codex CLI/editor — one record per (session, model, local day)
 │  │  ├─ copilot_cli.py     # Copilot CLI — one record per (session, model, local day)
 │  │  └─ claude_cli.py      # Claude Code CLI — one record per JSONL session
-│  ├─ whimsy/                # Standalone docker-style masked-name generator (extractable, stdlib-only)
 │  ├─ stores/                # pluggable store backends (entry-point registry)
 │  │  ├─ __init__.py        # SessionStore protocol
 │  │  ├─ registry.py        # store discovery + instantiation (env var expansion)
@@ -197,6 +196,8 @@ TokenTracer/
 │  ├─ pipeline.py            # fluent TrackerPipeline — parallel collectors, .middlewares() chain
 │  ├─ config.py              # Paths, TOML loading, write_toml_setting
 │  └─ store.py               # deprecated alias for SqliteStore (backward compat)
+├─ packages/
+│  └─ whimsy/                # Standalone docker-style name generator — own PyPI distribution (Apache-2.0)
 ├─ tests/                    # pytest suite with fixtures
 └─ docs/                     # design docs, ARCHITECTURE.md, DESIGN-HISTORY.md, implementation plans
 ```

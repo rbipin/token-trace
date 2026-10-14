@@ -6,6 +6,7 @@ on:
 
 jobs:
   test:
+    if: ${{ !startsWith(github.event.release.tag_name, 'whimsy-v') }}
     uses: ./.github/workflows/ci.yml
 
   release:

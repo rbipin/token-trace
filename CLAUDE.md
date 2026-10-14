@@ -105,7 +105,6 @@ src/
     codex_cli.py         Reads active/archive Codex rollouts in memory (response accounting, cumulative-delta fallback); yields one record per (session, model, local day); ambiguity surfaces as collect warnings
     copilot_cli.py       Reads session-store.db + events.jsonl from ~/.copilot/; yields per-(session, model, local day) records
     claude_cli.py        Reads ~/.claude/projects/**/*.jsonl; yields one record per (session, local day) with assistant activity
-  whimsy/                Standalone docker-style name generator (stdlib-only, extractable to its own repo; only public API is generate_name)
   stores/
     __init__.py          SessionStore Protocol (name attr + upsert + close)
     registry.py          load_store_registry() (entry-point discovery + built-in fallback), instantiate_store()
@@ -116,6 +115,8 @@ src/
   config.py              Paths, TOML loading (Config.load()), write_toml_setting(), _expand_env_vars(), ensure_user_config_seeded() (called once from tracker.py main(); seeds ~/.tokentracer/model_aliases.toml and .tokentracer.toml from bundled defaults on first run, since installed builds get no pip post-install hook)
   report.py              UsageReporter: all/day/month/year periods, cache efficiency header, default detailed session view includes Reasoning, CtxPeak, and Tools columns, --summary, --by-project, --detailed (all rows + all columns + Synced from sync_log)
 ```
+
+`packages/whimsy/` is a separate distribution (`whimsy` on PyPI, Apache-2.0, src layout, own `pyproject.toml`, own tests, released with tags `whimsy-vX.Y.Z` through `.github/workflows/release-whimsy.yml`). Its only public API is `generate_name(existing=None, rng=None, fmt="first_last") -> str`. `tokentracer` depends on `whimsy>=0.1,<1`; `requirements.txt` installs the in-repo copy with `-e packages/whimsy`. `src/project_identity.py` is its only in-tree consumer. Publish `whimsy` before releasing a `tokentracer` version that needs a newer one.
 
 **Data flow**: `Collector.collect(since)` → `List[SessionRecord]` → `merge_records` deduplicates → RecordMiddleware chain transforms (e.g. `ModelNormalizeMiddleware` sets `canonical_model`) → `UsageStore.upsert` writes SQLite → `UsageReporter.report` aggregates for display.
 

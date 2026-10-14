@@ -88,7 +88,7 @@ flowchart LR
 | `src/stores/` | `SessionStore` protocol, SQLite + Supabase implementations, registry |
 | `src/report.py` | `UsageReporter`: aggregation and table rendering |
 | `src/config.py` | Paths, `~/.tokentracer/.tokentracer.toml` loading, `${VAR}` expansion |
-| `src/whimsy/` | Standalone stdlib-only `generate_name()` package for masked project names |
+| `packages/whimsy/` | Separate `whimsy` distribution: stdlib-only `generate_name()` for masked project names |
 
 ---
 
@@ -490,10 +490,13 @@ in a repo checkout; override with `--db`).
   (orphan sync entries are dropped), and the retired usage-event ledger
   tables and views are dropped.
 
-The whimsical-name implementation lives in `src/whimsy/`, a self-contained
-stdlib-only package with one public function, `generate_name(existing=None,
-rng=None)`. `src/project_identity.py` is its only in-tree consumer, which
-keeps the package extractable into its own repository later.
+The whimsical-name implementation lives in `packages/whimsy/`, a separate
+stdlib-only distribution (`whimsy`, Apache-2.0) with one public function,
+`generate_name(existing=None, rng=None, fmt="first_last")`. `fmt` selects
+`first_last`, `first-last` or `first last`; the result is always a `str`.
+`tokentracer` declares `whimsy>=0.1,<1` as a dependency, and
+`src/project_identity.py` is its only in-tree consumer. Releases use the
+`whimsy-vX.Y.Z` tag prefix and a separate PyPI Trusted Publishing workflow.
 
 ---
 

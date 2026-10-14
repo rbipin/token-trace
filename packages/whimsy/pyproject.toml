@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "whimsy"
+version = "0.1.0"
+description = "Docker-style whimsical name generator (admiring_agnesi, clever_ramanujan, ...)"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+requires-python = ">=3.11"
+keywords = ["names", "generator", "docker", "random", "whimsical"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
