@@ -608,6 +608,27 @@ key = "${SUPABASE_KEY}"      # service role key (bypasses RLS)
 table = "token_sessions"     # optional, this is the default
 ```
 
+### Verifying and repairing sync
+
+Use this after a long `collect --lookback N` or when local and remote totals
+disagree. Back up `~/.tokentracer/usage.db` first.
+
+- **Idempotency** — snapshot `sessions`
+  (`sqlite3 usage.db "select * from sessions order by session_id,source,model,date"`),
+  run `collect --lookback N` twice, and compare. The second run must not change
+  the snapshot. The first run may change rows of sessions still open and of
+  sessions stored before the daily-row split.
+- **Local vs remote** — compare by the key `(session_id, source, model, date)`
+  with a read-only select. Filter remote rows by `context`: a remote table can
+  hold rows from other machines (for example `work`) that have no local
+  session. Compare `start_ts`/`end_ts` as instants; the remote stores UTC.
+- **Missing remote rows** — `sync_log` can mark a row synced for a store while
+  the remote row is gone. `sync` trusts `sync_log`, so it reports 0 pending.
+  Delete that store's `sync_log` rows for the missing keys
+  (`DELETE FROM sync_log WHERE store_name = ? AND session_id = ? AND source = ? AND model = ? AND date = ?`),
+  then run `tracker.py sync`. The dry-run count can exceed the number of
+  deleted rows because sync pushes every row of a session with an unsynced row.
+
 ---
 
 ## Extending

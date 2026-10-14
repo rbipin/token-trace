@@ -522,6 +522,10 @@ key as the local database — so syncing is idempotent too. Before each push the
 store deletes the remote rows of the sessions being pushed (see the Supabase
 section above).
 
+If local and remote totals disagree (for example `sync --dry-run` shows 0
+pending but remote rows are missing), see
+[Verifying and repairing sync](docs/ARCHITECTURE.md#verifying-and-repairing-sync).
+
 ### Writing your own store
 
 Stores are discovered through the `tokentracer.stores` entry-point group, so
