@@ -2,14 +2,11 @@
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import asdict
 import sys
 from contextlib import closing
 from pathlib import Path
 
 from ..models import SessionRecord
-from ..usage import CollectionBatch, UsageEvent, UsageCoverage
-from . import sqlite_usage
 from . import SessionStore
 
 _CREATE_SESSIONS = """
@@ -31,7 +28,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     context_peak_tokens    INTEGER DEFAULT 0,
     reasoning_tokens       INTEGER DEFAULT 0,
     context                TEXT DEFAULT 'personal',
-    PRIMARY KEY (session_id, source, model)
+    PRIMARY KEY (session_id, source, model, date)
 )
 """
 
@@ -40,9 +37,10 @@ CREATE TABLE IF NOT EXISTS sync_log (
     session_id  TEXT NOT NULL,
     source      TEXT NOT NULL,
     model       TEXT NOT NULL,
+    date        TEXT NOT NULL,
     store_name  TEXT NOT NULL,
     synced_at   TEXT NOT NULL,
-    PRIMARY KEY (session_id, source, model, store_name)
+    PRIMARY KEY (session_id, source, model, date, store_name)
 )
 """
 
@@ -53,14 +51,17 @@ CREATE TABLE IF NOT EXISTS run_log (
 )
 """
 
-_UPSERT = """
-INSERT OR REPLACE INTO sessions
-    (session_id, source, model, canonical_model, date, start_ts, end_ts, project,
-     turns, tool_calls, input_tokens, output_tokens,
-     cache_creation_tokens, cache_read_tokens,
-     context_peak_tokens, reasoning_tokens, context)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-"""
+_SESSION_COLUMNS = (
+    "session_id", "source", "model", "canonical_model", "date", "start_ts", "end_ts",
+    "project", "turns", "tool_calls", "input_tokens", "output_tokens",
+    "cache_creation_tokens", "cache_read_tokens", "context_peak_tokens",
+    "reasoning_tokens", "context",
+)
+
+_INSERT = (
+    f"INSERT INTO sessions ({', '.join(_SESSION_COLUMNS)}) "
+    f"VALUES ({', '.join('?' * len(_SESSION_COLUMNS))})"
+)
 
 
 class SqliteStore:
@@ -113,75 +114,82 @@ class SqliteStore:
                 conn.execute(
                     "ALTER TABLE sessions ADD COLUMN canonical_model TEXT"
                 )
-            sqlite_usage.migrate(conn)
+            # Remove the retired per-event usage ledger (superseded by daily session rows)
+            conn.execute("DROP VIEW IF EXISTS reporting_usage")
+            conn.execute("DROP VIEW IF EXISTS usage_daily")
+            for table in ("usage_events", "usage_coverage",
+                          "usage_event_sync_log", "usage_coverage_sync_log"):
+                conn.execute(f"DROP TABLE IF EXISTS {table}")
+            self._migrate_daily_key(conn)
             conn.commit()
 
-    def upsert(self, records: list[SessionRecord]) -> int:
-        """Persist records using INSERT OR REPLACE (last-write-wins).
+    @staticmethod
+    def _migrate_daily_key(conn: sqlite3.Connection) -> None:
+        """Rebuild pre-daily tables so `date` is part of the primary key.
 
-        If a record's stored values differ from what's already in the table,
-        its sync_log entries are cleared so unsynced_for() picks it up again
-        on the next sync — otherwise a backfill would silently never re-push.
+        Existing rows keep their data and date. Sync entries whose session row
+        no longer exists are dropped.
+        """
+        session_pk = {r[1]: r[5] for r in conn.execute("PRAGMA table_info(sessions)")}
+        log_cols = {r[1] for r in conn.execute("PRAGMA table_info(sync_log)")}
+        if session_pk.get("date") and "date" in log_cols:
+            return
+        conn.commit()  # DDL above ran in autocommit; start one explicit transaction
+        conn.execute("BEGIN")
+        if not session_pk.get("date"):
+            cols = ", ".join(_SESSION_COLUMNS)
+            conn.execute("ALTER TABLE sessions RENAME TO sessions_pre_daily")
+            conn.execute(_CREATE_SESSIONS)
+            conn.execute(f"INSERT INTO sessions ({cols}) SELECT {cols} FROM sessions_pre_daily")
+            conn.execute("DROP TABLE sessions_pre_daily")
+        if "date" not in log_cols:
+            conn.execute("ALTER TABLE sync_log RENAME TO sync_log_pre_daily")
+            conn.execute(_CREATE_SYNC_LOG)
+            conn.execute("""
+                INSERT OR IGNORE INTO sync_log (session_id, source, model, date, store_name, synced_at)
+                SELECT l.session_id, l.source, l.model, s.date, l.store_name, l.synced_at
+                FROM sync_log_pre_daily l
+                JOIN sessions s
+                  ON s.session_id = l.session_id AND s.source = l.source AND s.model = l.model
+            """)
+            conn.execute("DROP TABLE sync_log_pre_daily")
+        conn.commit()
+
+    def upsert(self, records: list[SessionRecord]) -> int:
+        """Replace each collected session's day rows.
+
+        Records are grouped by (session_id, source). When a session's stored
+        rows differ from the new set (a day added, removed, or changed), all of
+        its rows are replaced and its sync_log entries cleared, so
+        unsynced_for() re-pushes the whole session. Unchanged sessions are not
+        touched.
 
         Args:
-            records: List of SessionRecord objects to upsert.
+            records: List of SessionRecord objects to store.
 
         Returns:
-            Count of records upserted.
+            Count of records received.
         """
-        with closing(self._connect()) as conn, conn:
-            return self._upsert_sessions(conn, records)
-
-    @staticmethod
-    def _upsert_sessions(conn, records) -> int:
+        if not records:
+            return 0
+        sessions: dict[tuple[str, str], dict[tuple, tuple]] = {}
         for r in records:
-            new_row = (
-                r.model, r.canonical_model, r.date, r.start_ts, r.end_ts, r.project,
-                r.turns, r.tool_calls, r.input_tokens, r.output_tokens,
-                r.cache_creation_tokens, r.cache_read_tokens,
-                r.context_peak_tokens, r.reasoning_tokens, r.context,
-            )
-            existing = conn.execute(
-                """
-                SELECT model, canonical_model, date, start_ts, end_ts, project,
-                       turns, tool_calls, input_tokens, output_tokens,
-                       cache_creation_tokens, cache_read_tokens,
-                       context_peak_tokens, reasoning_tokens, context
-                FROM sessions WHERE session_id = ? AND source = ? AND model = ?
-                """,
-                (r.session_id, r.source, r.model),
-            ).fetchone()
-            if existing is not None and tuple(existing) != new_row:
-                conn.execute(
-                    "DELETE FROM sync_log WHERE session_id = ? AND source = ? AND model = ?",
-                    (r.session_id, r.source, r.model),
-                )
-            conn.execute(_UPSERT, (r.session_id, r.source) + new_row)
+            sessions.setdefault((r.session_id, r.source), {})[r.key] = tuple(
+                getattr(r, c) for c in _SESSION_COLUMNS)
+        cols = ", ".join(_SESSION_COLUMNS)
+        with closing(self._connect()) as conn, conn:
+            for (session_id, source), rows in sessions.items():
+                stored = {tuple(row) for row in conn.execute(
+                    f"SELECT {cols} FROM sessions WHERE session_id = ? AND source = ?",
+                    (session_id, source))}
+                if stored == set(rows.values()):
+                    continue
+                conn.execute("DELETE FROM sync_log WHERE session_id = ? AND source = ?",
+                             (session_id, source))
+                conn.execute("DELETE FROM sessions WHERE session_id = ? AND source = ?",
+                             (session_id, source))
+                conn.executemany(_INSERT, rows.values())
         return len(records)
-
-    def upsert_batch(self, batch: CollectionBatch) -> int:
-        with closing(self._connect()) as conn, conn:
-            written = self._upsert_sessions(conn, batch.sessions)
-            sqlite_usage.persist(conn, batch)
-        return written
-
-    def coverage_for_sessions(self, records: list[SessionRecord]) -> tuple[UsageCoverage, ...]:
-        coverage = []
-        with closing(self._connect()) as conn:
-            for source, sid in dict.fromkeys((r.source, r.session_id) for r in records):
-                row = conn.execute('SELECT status,reason FROM usage_coverage WHERE source=? AND session_id=?', (source,sid)).fetchone()
-                if row:
-                    coverage.append(UsageCoverage(source,sid,*row))
-        return tuple(coverage)
-
-    def unsynced_events_for(self, store_name: str) -> list[UsageEvent]:
-        with closing(self._connect()) as conn:
-            return sqlite_usage.pending(conn, store_name)
-
-    def mark_events_synced(self, events: list[UsageEvent], store_name: str) -> None:
-        with closing(self._connect()) as conn, conn:
-            sqlite_usage.acknowledge(conn, events, store_name)
-
 
     def close(self) -> None:
         """Flush buffers and release resources."""
@@ -189,7 +197,7 @@ class SqliteStore:
         # so there's nothing to do here, but we implement the protocol.
         pass
 
-    def unsynced_for(self, store_name: str, include_coverage: bool = False) -> list[SessionRecord]:
+    def unsynced_for(self, store_name: str) -> list[SessionRecord]:
         """Return all records not yet synced to the given store."""
         _UNSYNCED = """
         SELECT s.session_id, s.source, s.model, s.canonical_model, s.date,
@@ -198,22 +206,20 @@ class SqliteStore:
                s.cache_creation_tokens, s.cache_read_tokens,
                s.context_peak_tokens, s.reasoning_tokens, s.context
         FROM sessions s
-        LEFT JOIN sync_log l
-            ON s.session_id = l.session_id
-            AND s.source = l.source
-            AND s.model = l.model
-            AND l.store_name = ?
-        WHERE l.session_id IS NULL
+        WHERE EXISTS (
+            SELECT 1 FROM sessions u
+            LEFT JOIN sync_log l
+                ON u.session_id = l.session_id
+                AND u.source = l.source
+                AND u.model = l.model
+                AND u.date = l.date
+                AND l.store_name = ?
+            WHERE u.session_id = s.session_id AND u.source = s.source
+              AND l.session_id IS NULL
+        )
         """
-        if include_coverage:
-            _UNSYNCED += """ OR NOT EXISTS (
-                SELECT 1 FROM usage_coverage_sync_log a
-                LEFT JOIN usage_coverage c ON c.source=a.source AND c.session_id=a.session_id
-                WHERE a.source=s.source AND a.session_id=s.session_id AND a.model=s.model
-                    AND a.store_name=? AND a.status=COALESCE(c.status,'legacy') AND a.reason IS c.reason)
-            """
         with closing(self._connect()) as conn:
-            rows = conn.execute(_UNSYNCED, (store_name,store_name) if include_coverage else (store_name,)).fetchall()
+            rows = conn.execute(_UNSYNCED, (store_name,)).fetchall()
         return [
             SessionRecord(
                 session_id=row[0], source=row[1], model=row[2], canonical_model=row[3],
@@ -226,29 +232,6 @@ class SqliteStore:
             )
             for row in rows
         ]
-
-    def unsynced_with_coverage_for(self, store_name: str) -> list[SessionRecord]:
-        return self.unsynced_for(store_name, include_coverage=True)
-
-    def mark_session_batch_synced(self, batch: CollectionBatch, store_name: str) -> None:
-        """Acknowledge only the exact session and coverage revision sent."""
-        expected={(c.source,c.session_id):(c.status,c.reason) for c in batch.coverage}
-        with closing(self._connect()) as conn, conn:
-            conn.execute('BEGIN IMMEDIATE')
-            for record in batch.sessions:
-                values=asdict(record)
-                current=conn.execute('SELECT '+','.join(values)+' FROM sessions '
-                    'WHERE session_id=? AND source=? AND model=?',record.key).fetchone()
-                coverage=conn.execute('SELECT status,reason FROM usage_coverage WHERE source=? AND session_id=?',
-                    (record.source,record.session_id)).fetchone()
-                revision=tuple(coverage) if coverage else ('legacy',None)
-                if current is None or tuple(current)!=tuple(values.values()) or revision!=expected.get(
-                        (record.source,record.session_id),('legacy',None)):
-                    continue
-                conn.execute("INSERT OR IGNORE INTO sync_log VALUES (?,?,?,?,datetime('now'))",
-                    (*record.key,store_name))
-                conn.execute('INSERT OR REPLACE INTO usage_coverage_sync_log VALUES (?,?,?,?,?,?)',
-                    (record.source,record.session_id,record.model,store_name,*revision))
 
     def record_run(self, timestamp: str | None = None) -> None:
         """Record that `collect` executed, upserting the single run_log row."""
@@ -266,11 +249,11 @@ class SqliteStore:
         if not records:
             return
         _MARK_SYNCED = """
-        INSERT OR IGNORE INTO sync_log (session_id, source, model, store_name, synced_at)
-        VALUES (?, ?, ?, ?, datetime('now'))
+        INSERT OR IGNORE INTO sync_log (session_id, source, model, date, store_name, synced_at)
+        VALUES (?, ?, ?, ?, ?, datetime('now'))
         """
         with closing(self._connect()) as conn, conn:
             conn.executemany(
                 _MARK_SYNCED,
-                [(r.session_id, r.source, r.model, store_name) for r in records],
+                [(r.session_id, r.source, r.model, r.date, store_name) for r in records],
             )

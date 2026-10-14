@@ -7,7 +7,6 @@ import Heatmap from "../components/Heatmap.jsx";
 import TrendChart from "../components/TrendChart.jsx";
 import HarnessCards from "../components/HarnessCards.jsx";
 import ContextBreakdown, { COLORS as CONTEXT_COLORS } from "../components/ContextBreakdown.jsx";
-import UsageAttribution from "../components/UsageAttribution.jsx";
 import ModelBreakdown from "../components/ModelBreakdown.jsx";
 import { formatTokens } from "../format.js";
 import { formatRelativeTime } from "../relativeTime.js";
@@ -93,7 +92,6 @@ export default function TokensPage() {
                 <div key={s.label} style={{ width: `${s.pct}%`, background: s.color }} />
               ))}
             </div>
-            <UsageAttribution attribution={summary?.attribution} />
             <HarnessCards summary={summary} />
           </div>
           <ContextBreakdown summary={summary} />

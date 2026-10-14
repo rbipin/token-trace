@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Protocol, Sequence
 
 from .stores.sqlite import SqliteStore
-from .dashboard.queries import attribution
 
 _PERIOD_SQL = {
     "all":   "strftime('%Y-%m', date)",
@@ -53,7 +52,6 @@ class SessionsDetailedView:
             SELECT
                 COALESCE(project, '—')                              AS project,
                 source,
-                'lifetime' AS activity_scope,
                 COALESCE(canonical_model, model)                       AS model,
                 start_ts,
                 end_ts,
@@ -104,9 +102,9 @@ class SessionsDetailedView:
         return _format_table(
             ctx.hit_rate,
             ctx.cost_saved,
-            headers=["Project", "Source", "Model", "LifetimeStart", "LifetimeEnd",
+            headers=["Project", "Source", "Model", "Start", "End",
                      "Input", "Output", "Reasoning", "CacheRead", "CacheCreate",
-                     "CacheHit%", "CtxPeak", "LifetimeRequests", "LifetimeTools"],
+                     "CacheHit%", "CtxPeak", "Turns", "Tools"],
             rows=table_rows,
         )
 
@@ -126,7 +124,7 @@ class PeriodSummaryView:
                 SUM(output_tokens)                        AS output_tokens,
                 SUM(cache_creation_tokens)                AS cache_creation_tokens,
                 SUM(cache_read_tokens)                    AS cache_read_tokens
-            FROM reporting_usage
+            FROM sessions
             WHERE {ctx.date_filter}{ctx.model_filter}
             GROUP BY {period_expr}, source, COALESCE(canonical_model, model)
             ORDER BY period DESC, input_tokens DESC
@@ -144,7 +142,7 @@ class PeriodSummaryView:
         return _format_table(
             ctx.hit_rate,
             ctx.cost_saved,
-            headers=["Period", "Source", "Model", "Requests",
+            headers=["Period", "Source", "Model", "Turns",
                      "Input", "Output", "CacheCreate", "CacheRead"],
             rows=[
                 [r["period"], r["source"], r["model"], r["turns"],
@@ -168,7 +166,7 @@ class ByProjectView:
                 SUM(input_tokens)       AS input_tokens,
                 SUM(output_tokens)      AS output_tokens,
                 SUM(cache_read_tokens)  AS cache_read_tokens
-            FROM reporting_usage
+            FROM sessions
             WHERE project IS NOT NULL
               AND {ctx.date_filter}{ctx.model_filter}
             GROUP BY project, date, COALESCE(canonical_model, model)
@@ -194,7 +192,7 @@ class ByProjectView:
         return _format_table(
             ctx.hit_rate,
             ctx.cost_saved,
-            headers=["Project", "Date", "Model", "Requests", "Input", "Output", "CacheRead"],
+            headers=["Project", "Date", "Model", "Turns", "Input", "Output", "CacheRead"],
             rows=[
                 [r["project"], r["date"], r["model"], r["turns"],
                  r["input_tokens"], r["output_tokens"], r["cache_read_tokens"]]
@@ -210,7 +208,6 @@ class SessionsListView:
         rows = ctx.conn.execute(f"""
             SELECT
                 session_id,
-                'lifetime' AS activity_scope,
                 COALESCE(project, '—')                                      AS project,
                 date,
                 start_ts,
@@ -249,7 +246,7 @@ class SessionsListView:
         return _format_table(
             ctx.hit_rate,
             ctx.cost_saved,
-            headers=["Session", "Project", "Date", "LifetimeStart", "LifetimeEnd", "LifetimeRequests", "Tokens", "CacheHit%"],
+            headers=["Session", "Project", "Date", "Start", "End", "Turns", "Tokens", "CacheHit%"],
             rows=table_rows,
         )
 
@@ -288,6 +285,7 @@ class FullDumpView:
                         WHERE l.session_id = sessions.session_id
                           AND l.source = sessions.source
                           AND l.model = sessions.model
+                          AND l.date = sessions.date
                         ORDER BY l.store_name
                     )
                 ), '')                  AS synced
@@ -362,7 +360,7 @@ class UsageReporter:
                 COALESCE(SUM(input_tokens), 0),
                 COALESCE(SUM(cache_creation_tokens), 0),
                 COALESCE(SUM(cache_read_tokens), 0)
-            FROM reporting_usage WHERE {where}
+            FROM sessions WHERE {where}
         """,params).fetchone()
         total = row[0] + row[1] + row[2]
         if total == 0:
@@ -412,30 +410,24 @@ class UsageReporter:
         conn = self._connect()
         try:
             ctx = self._make_context(conn, 'all' if detailed else period, models, as_json)
-            conn.execute(f"CREATE TEMP TABLE scoped_usage AS SELECT * FROM reporting_usage WHERE {ctx.date_filter}{ctx.model_filter}",ctx.params)
+            conn.execute(
+                f"CREATE TEMP TABLE scoped_usage AS SELECT * FROM sessions "
+                f"WHERE {ctx.date_filter}{ctx.model_filter}", ctx.params)
+            # One row per session/model inside the period: day rows are summed,
+            # timestamps span the period's first and last activity.
             conn.execute("""CREATE TEMP VIEW period_sessions AS
-                SELECT session_id,source,model,canonical_model,MIN(date) AS date,project,
-                    MAX(lifetime_start_ts) AS start_ts, MAX(lifetime_end_ts) AS end_ts,
-                    SUM(input_tokens) AS input_tokens,SUM(output_tokens) AS output_tokens,
-                    SUM(cache_read_tokens) AS cache_read_tokens,SUM(cache_creation_tokens) AS cache_creation_tokens,
-                    SUM(reasoning_tokens) AS reasoning_tokens,MAX(context_peak_tokens) AS context_peak_tokens,
-                    MAX(lifetime_turns) AS turns,MAX(lifetime_tool_calls) AS tool_calls
-                FROM scoped_usage GROUP BY source,session_id,model
+                SELECT session_id, source, model, MAX(canonical_model) AS canonical_model, MIN(date) AS date,
+                    MAX(project) AS project,
+                    MIN(start_ts) AS start_ts, MAX(end_ts) AS end_ts,
+                    SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens,
+                    SUM(cache_read_tokens) AS cache_read_tokens,
+                    SUM(cache_creation_tokens) AS cache_creation_tokens,
+                    SUM(reasoning_tokens) AS reasoning_tokens,
+                    MAX(context_peak_tokens) AS context_peak_tokens,
+                    SUM(turns) AS turns, SUM(tool_calls) AS tool_calls
+                FROM scoped_usage GROUP BY source, session_id, model
             """)
-            quality = attribution(conn,ctx.date_filter+ctx.model_filter,ctx.params)
-            output = _pick_strategy(summary, by_project, period, detailed).render(ctx)
-            if as_json:
-                payload=json.loads(output)
-                payload['attribution']=quality
-                return json.dumps(payload,indent=2)
-            notices=[]
-            if quality['legacy_tokens']:
-                notices.append('Historical usage is assigned to session start dates.')
-            if quality['partial_session_count']:
-                notices.append(f"{quality['partial_session_count']} session(s) have partial usage.")
-            if quality['unavailable_session_count']:
-                notices.append(f"{quality['unavailable_session_count']} session(s) have unavailable usage; consumption is unknown.")
-            return output + ('\n'+'\n'.join(notices)+'\n' if notices else '')
+            return _pick_strategy(summary, by_project, period, detailed).render(ctx)
         finally:
             conn.close()
 

@@ -19,14 +19,3 @@ test('reasoning remains included in output percentages', async () => {
   assert.match(html, /20\.0%/);
   assert.match(html, /Reasoning \(included in output\)/);
 });
-
-test('partial and unavailable usage is disclosed without inventing zero consumption', async () => {
-  const { default: UsageAttribution } = await vite.ssrLoadModule('/src/components/UsageAttribution.jsx');
-  const html = renderToStaticMarkup(React.createElement(UsageAttribution, {
-    attribution: { legacy_tokens: 100, partial_session_count: 1, unavailable_session_count: 2 }
-  }));
-  assert.match(html, /session start dates/);
-  assert.match(html, /partial usage/);
-  assert.match(html, /usage unavailable/);
-  assert.match(html, /consumption is unknown/);
-});

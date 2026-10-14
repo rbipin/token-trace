@@ -28,13 +28,13 @@ class SessionRecord:
     canonical_model: str | None = None  # normalized model name, computed by ModelNormalizeMiddleware
 
     @property
-    def key(self) -> tuple[str, str, str]:
-        return (self.session_id, self.source, self.model)
+    def key(self) -> tuple[str, str, str, str]:
+        return (self.session_id, self.source, self.model, self.date)
 
 
 def merge_records(records: list[SessionRecord]) -> list[SessionRecord]:
-    """Deduplicate by (session_id, source, model). Last writer wins."""
-    merged: dict[tuple[str, str, str], SessionRecord] = {}
+    """Deduplicate by (session_id, source, model, date). Last writer wins."""
+    merged: dict[tuple[str, str, str, str], SessionRecord] = {}
     for rec in records:
         merged[rec.key] = rec
     return list(merged.values())

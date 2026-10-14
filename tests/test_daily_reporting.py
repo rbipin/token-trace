@@ -1,154 +1,78 @@
+import json
 import sqlite3
+
 from src.dashboard import queries
 from src.models import SessionRecord
+from src.report import UsageReporter
 from src.stores.sqlite import SqliteStore
-from src.usage import CollectionBatch, UsageCoverage
-from usage_helpers import event
 
-def test_period_totals_do_not_repeat_session_lifetime(tmp_path):
-    path = tmp_path / 'usage.db'
-    store = SqliteStore(path)
-    rec = SessionRecord('s1','codex_cli',model='gpt-5.3-codex',date='2026-10-08',input_tokens=150)
-    store.upsert_batch(CollectionBatch((rec,), (event(tokens=100),
-        event(eid='r2',day='2026-10-09',tokens=50)),
-        (UsageCoverage('codex_cli','s1','measured'),)))
+
+def _rec(sid, day, model='gpt-5.3-codex', source='codex_cli', **kw):
+    return SessionRecord(sid, source, model=model, date=day, **kw)
+
+
+def _summary(path, *args):
     with sqlite3.connect(path) as conn:
         conn.row_factory = sqlite3.Row
-        first = queries.summary(conn,'custom','2026-10-08','2026-10-08')
-        second = queries.summary(conn,'custom','2026-10-09','2026-10-09')
-        both = queries.summary(conn,'all')
-    assert (first['total_tokens'],second['total_tokens'],both['total_tokens']) == (100,50,150)
-    assert both['session_count'] == 1
-
-from dataclasses import replace
-from datetime import date, timedelta
-from src.report import UsageReporter
-import json
-import pytest
+        return queries.summary(conn, *args)
 
 
-def seed_daily(path,day=None):
-    day=day or date.today().isoformat()
-    prior=(date.fromisoformat(day)-timedelta(days=1)).isoformat()
-    store=SqliteStore(path)
-    rec=SessionRecord('s1','codex_cli',model='gpt-5.3-codex',date=prior,project='project',start_ts=prior+'T12:00:00+00:00',tool_calls=7)
-    events=(replace(event(day=prior,tokens=100),output_tokens=20,reasoning_tokens=10),
-            replace(event(eid='r2',day=day,tokens=50),cache_read_tokens=150,output_tokens=10,reasoning_tokens=5))
-    store.upsert_batch(CollectionBatch((rec,),events,(UsageCoverage('codex_cli','s1','measured'),)))
-    return store
+def test_dashboard_scopes_tokens_by_row_date(tmp_path):
+    path = tmp_path / 'usage.db'
+    SqliteStore(path).upsert([_rec('s1', '2026-10-08', input_tokens=100),
+                              _rec('s2', '2026-10-09', input_tokens=50)])
+    assert _summary(path, 'custom', '2026-10-08', '2026-10-08')['total_tokens'] == 100
+    assert _summary(path, 'all')['total_tokens'] == 150
 
 
-def test_distinct_session_counts_across_models_days_and_sources(tmp_path):
-    path=tmp_path/'usage.db'
-    store=seed_daily(path)
-    other=SessionRecord('s1','codex_cli',model='other',date=date.today().isoformat())
-    store.upsert_batch(CollectionBatch((other,),(event(eid='r3',day=date.today().isoformat(),model='other',tokens=25),)))
-    store.upsert([SessionRecord('s1','claude_cli',date=date.today().isoformat(),input_tokens=20)])
-    with sqlite3.connect(path) as conn:
-        conn.row_factory=sqlite3.Row
-        summary=queries.summary(conn,'all')
-    assert summary['session_count'] == 2
-    assert summary['total_tokens'] == 375
+def test_session_count_is_distinct_source_and_session(tmp_path):
+    path = tmp_path / 'usage.db'
+    SqliteStore(path).upsert([_rec('s1', '2026-10-08', model='a'),
+                              _rec('s1', '2026-10-08', model='b'),
+                              _rec('s1', '2026-10-08', source='claude_cli')])
+    assert _summary(path, 'all')['session_count'] == 2
 
 
-def test_attribution_discloses_mixed_and_missing_usage(tmp_path):
-    path=tmp_path/'usage.db'
-    store=seed_daily(path)
-    store.upsert([SessionRecord('legacy','claude_cli',date=date.today().isoformat(),input_tokens=20)])
-    for sid,status in [('partial','partial'),('missing','unavailable')]:
-        rec=SessionRecord(sid,'codex_cli',date=date.today().isoformat(),input_tokens=999)
-        store.upsert_batch(CollectionBatch((rec,),(),(UsageCoverage('codex_cli',sid,status),)))
-    with sqlite3.connect(path) as conn:
-        conn.row_factory=sqlite3.Row
-        summary=queries.summary(conn,'all')
-    assert summary['total_tokens'] == 350
-    assert summary['attribution'] == dict(legacy_tokens=20,partial_session_count=1,unavailable_session_count=1)
-    text=UsageReporter(path).report(period='all')
-    assert 'session start' in text.lower()
-    assert 'unavailable' in text.lower()
+def test_summary_has_no_attribution_block(tmp_path):
+    path = tmp_path / 'usage.db'
+    SqliteStore(path).upsert([_rec('s1', '2026-10-08', input_tokens=1)])
+    assert 'attribution' not in _summary(path, 'all')
 
 
-def test_custom_range_does_not_leak_bounds_into_rolling_filters(tmp_path):
-    path=tmp_path/'usage.db'
-    seed_daily(path)
-    with sqlite3.connect(path) as conn:
-        conn.row_factory=sqlite3.Row
-        summary=queries.summary(conn,'custom','2020-01-01','2020-01-02',source='codex_cli')
-    assert summary['total_tokens'] == 0
-    assert summary['rolling']['7d']['total_tokens'] == 330
+def test_cli_report_has_no_lifetime_labels_or_notices(tmp_path):
+    path = tmp_path / 'usage.db'
+    SqliteStore(path).upsert([_rec('s1', '2026-10-08', input_tokens=1)])
+    text = UsageReporter(path).report(period='all')
+    assert 'Lifetime' not in text
+    assert 'session start dates' not in text
+    payload = json.loads(UsageReporter(path).report(period='all', as_json=True))
+    assert 'attribution' not in payload
+    assert 'activity_scope' not in payload['rows'][0]
 
 
-def test_all_dashboard_surfaces_share_daily_attribution(tmp_path):
-    path=tmp_path/'usage.db'
-    seed_daily(path)
-    day=date.today().isoformat()
-    prior=(date.today()-timedelta(days=1)).isoformat()
-    with sqlite3.connect(path) as conn:
-        conn.row_factory=sqlite3.Row
-        assert queries.heatmap(conn) == [dict(date=prior,tokens=120),dict(date=day,tokens=210)]
-        assert queries.trend(conn) == [dict(date=prior,source='codex_cli',tokens=120),dict(date=day,source='codex_cli',tokens=210)]
-        assert queries.projects(conn,'custom',day,day) == [dict(project='project',tokens=210)]
-        assert queries.project_detail(conn,'project','custom',day,day)['total_tokens'] == 210
+def test_report_groups_day_rows_into_one_session_row(tmp_path):
+    path = tmp_path / 'usage.db'
+    SqliteStore(path).upsert([
+        _rec('s1', '2026-10-08', input_tokens=100, turns=2, tool_calls=1, context_peak_tokens=90,
+             start_ts='2026-10-08T09:00:00', end_ts='2026-10-08T10:00:00'),
+        _rec('s1', '2026-10-09', input_tokens=50, turns=1, tool_calls=3, context_peak_tokens=120,
+             start_ts='2026-10-09T09:00:00', end_ts='2026-10-09T11:00:00')])
+    rows = json.loads(UsageReporter(path).report(period='all', as_json=True))['rows']
+    assert len(rows) == 1
+    r = rows[0]
+    assert (r['input_tokens'], r['turns'], r['tool_calls'], r['context_peak_tokens']) == (150, 3, 4, 120)
+    assert (r['start_ts'], r['end_ts']) == ('2026-10-08T09:00:00', '2026-10-09T11:00:00')
+    detailed = json.loads(UsageReporter(path).report(detailed=True, as_json=True))['rows']
+    assert len(detailed) == 2
+    assert _summary(path, 'custom', '2026-10-09', '2026-10-09')['total_tokens'] == 50
 
 
-@pytest.mark.parametrize('summary',[False,True])
-def test_cli_day_scopes_tokens_and_cache_rates(tmp_path,summary):
-    path=tmp_path/'usage.db'
-    seed_daily(path)
-    payload=json.loads(UsageReporter(path).report(period='day',summary=summary,as_json=True))
-    assert payload['cache_efficiency']['hit_rate'] == .75
-    row=payload['rows'][0]
-    if not summary:
-        assert row['input_tokens'] == 50
-        assert row['output_tokens'] == 10
-        assert row['tool_calls'] == 7
-        assert row['activity_scope'] == 'lifetime'
-    else:
-        assert row['total_tokens'] == 210
+def test_session_view_is_stable_when_project_differs_across_days(tmp_path):
+    path = tmp_path / 'usage.db'
+    SqliteStore(path).upsert([
+        _rec('s1', '2026-10-08', input_tokens=1, project='a'),
+        _rec('s1', '2026-10-09', input_tokens=1, project='b')])
+    rows = json.loads(UsageReporter(path).report(period='all', as_json=True))['rows']
+    assert len(rows) == 1
+    assert rows[0]['project'] == 'b'
 
-
-def test_cli_all_groups_daily_rows_back_into_one_session_model(tmp_path):
-    path=tmp_path/'usage.db'
-    seed_daily(path)
-    payload=json.loads(UsageReporter(path).report(period='all',as_json=True))
-    assert len(payload['rows']) == 1
-    assert payload['rows'][0]['input_tokens'] == 150
-    assert payload['rows'][0]['tool_calls'] == 7
-    text=UsageReporter(path).report(period='all')
-    assert 'Lifetime' in text
-
-
-def test_report_initializes_additive_schema_for_pre_feature_database(tmp_path):
-    from src.stores.sqlite import _CREATE_SESSIONS, _CREATE_SYNC_LOG
-    path=tmp_path/'usage.db'
-    with sqlite3.connect(path) as conn:
-        conn.execute(_CREATE_SESSIONS)
-        conn.execute(_CREATE_SYNC_LOG)
-        conn.execute("INSERT INTO sessions(session_id,source,model,date,input_tokens) VALUES ('s1','claude_cli','m','2020-01-01',20)")
-    payload=json.loads(UsageReporter(path).report(period='all',as_json=True))
-    assert payload['rows'][0]['input_tokens'] == 20
-    assert payload['attribution']['legacy_tokens'] == 20
-
-
-@pytest.mark.parametrize('period,want',[('day',50),('month',50),('year',50),('all',150)])
-def test_cli_calendar_periods_scope_event_tokens(tmp_path,period,want):
-    today=date.today()
-    old=date(today.year-1,1,1).isoformat()
-    path=tmp_path/'usage.db'
-    store=SqliteStore(path)
-    rec=SessionRecord('s1','codex_cli',model='gpt-5.3-codex',date=old)
-    store.upsert_batch(CollectionBatch((rec,),(event(day=old),event(eid='r2',day=today.isoformat(),tokens=50))))
-    payload=json.loads(UsageReporter(path).report(period=period,summary=True,as_json=True))
-    assert sum(r.get('input_tokens',r.get('total_tokens',0)) for r in payload['rows']) == want
-
-
-def test_cli_model_filter_uses_canonical_event_metadata(tmp_path):
-    path=tmp_path/'usage.db'
-    store=SqliteStore(path)
-    rec=SessionRecord('s1','codex_cli',model='raw',canonical_model='canonical',date=date.today().isoformat())
-    e=replace(event(day=date.today().isoformat()),model='raw',canonical_model='canonical')
-    store.upsert_batch(CollectionBatch((rec,),(e,)))
-    payload=json.loads(UsageReporter(path).report(period='all',models=['canonical'],as_json=True))
-    assert payload['rows'][0]['model'] == 'canonical'
-    assert payload['rows'][0]['input_tokens'] == 100
-    assert json.loads(UsageReporter(path).report(period='all',models=['other'],as_json=True))['rows'] == []

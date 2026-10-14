@@ -1,7 +1,7 @@
 from dataclasses import FrozenInstanceError, replace
 from zoneinfo import ZoneInfo
 import pytest
-from src.usage import UsageEvent, UsageCoverage, CollectionBatch, normalize_usage, event_time
+from src.collectors.codex_cli import UsageEvent, normalize_usage, event_time
 
 
 def test_cache_and_reasoning_are_subsets():
@@ -57,7 +57,3 @@ def test_event_is_frozen_and_canonical_alias_preserves_identity():
     with pytest.raises(FrozenInstanceError):
         e.input_tokens = 100
     assert replace(e,canonical_model='alias').key == ('codex_cli','s1','response:r1')
-    coverage=UsageCoverage('codex_cli','s1','measured')
-    batch=CollectionBatch(( ),(e,),(coverage,))
-    with pytest.raises(FrozenInstanceError):
-        batch.events = ()

@@ -21,10 +21,11 @@ def test_resumed_session_splits_usage_across_days(tmp_path):
         usage_row('r1', '2026-10-09T03:59:59Z', 100),
         usage_row('r2', '2026-10-09T04:00:00Z', 50)]
     write_rollout(tmp_path, rows)
-    batch = CodexCliCollector(tmp_path, tz=ZoneInfo('America/Detroit')).collect_batch(date(2026,10,8))
-    assert [(e.date, e.input_tokens) for e in batch.events] == [('2026-10-08',100),('2026-10-09',50)]
-    assert batch.sessions[0].session_id == 's1'
-    assert batch.sessions[0].input_tokens == 150
+    collector = CodexCliCollector(tmp_path, tz=ZoneInfo('America/Detroit'))
+    records = sorted(collector.collect(date(2026,10,8)), key=lambda r: r.date)
+    assert [(r.session_id, r.date, r.input_tokens, r.turns) for r in records] == [
+        ('s1','2026-10-08',100,1), ('s1','2026-10-09',50,1)]
+
 
 def test_recent_activity_selects_old_session(tmp_path):
     import os
@@ -36,7 +37,7 @@ def test_recent_activity_selects_old_session(tmp_path):
     path = write_rollout(tmp_path, rows)
     modified = datetime(2026, 10, 8, 16, tzinfo=timezone.utc).timestamp()
     os.utime(path, (modified, modified))
-    batch = CodexCliCollector(tmp_path, tz=ZoneInfo('America/Detroit')).collect_batch(date(2026,10,8))
+    batch = CodexCliCollector(tmp_path, tz=ZoneInfo('America/Detroit')).scan(date(2026,10,8))
     assert len(batch.sessions) == 1
     assert sum(e.input_tokens for e in batch.events) == 100
 
@@ -51,13 +52,13 @@ def test_partial_tail_completed_on_next_import(tmp_path):
     with path.open('a', encoding='utf-8') as stream:
         stream.write(final[:len(final)//2])
     collector = CodexCliCollector(tmp_path, tz=ZoneInfo('America/Detroit'))
-    before = collector.collect_batch(date(2026,10,8))
+    before = collector.scan(date(2026,10,8))
     assert [(e.response_id, e.input_tokens) for e in before.events] == [('r1',100)]
-    assert before.coverage[0].status == 'partial'
+    assert before.diagnostics
     with path.open('a', encoding='utf-8') as stream:
         stream.write(final[len(final)//2:] + '\n')
-    after = collector.collect_batch(date(2026,10,8))
-    again = collector.collect_batch(date(2026,10,8))
+    after = collector.scan(date(2026,10,8))
+    again = collector.scan(date(2026,10,8))
     assert [(e.response_id, e.input_tokens) for e in after.events] == [('r1',100),('r2',50)]
     assert again.events == after.events
 
@@ -75,10 +76,10 @@ def test_fork_copied_response_retains_originating_owner(tmp_path):
     own['payload'].update(session_id='child', thread_id='child')
     child.append(own)
     write_rollout(tmp_path, child, 'child.jsonl')
-    batch = CodexCliCollector(tmp_path, tz=ZoneInfo('America/Detroit')).collect_batch(date(2026,10,8))
+    batch = CodexCliCollector(tmp_path, tz=ZoneInfo('America/Detroit')).scan(date(2026,10,8))
     assert sorted((e.session_id,e.response_id,e.input_tokens) for e in batch.events) == [
         ('child','r2',50), ('s1','r1',100)]
-    assert sum(r.input_tokens for r in batch.sessions) == 150
+    assert sum(r.input_tokens for r in day_records(tmp_path)) == 150
 
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -100,7 +101,11 @@ def snapshot(tokens,minute=1,**kw):
 
 
 def collect(root):
-    return CodexCliCollector(root,tz=ZoneInfo('America/Detroit')).collect_batch(date(2026,10,8))
+    return CodexCliCollector(root,tz=ZoneInfo('America/Detroit')).scan(date(2026,10,8))
+
+
+def day_records(root):
+    return list(CodexCliCollector(root,tz=ZoneInfo('America/Detroit')).collect(date(2026,10,8)))
 
 
 @pytest.mark.parametrize('source',['cli','vscode'])
@@ -111,7 +116,7 @@ def test_cli_and_editor_variants_use_metadata_id(tmp_path,source):
     batch=collect(tmp_path)
     assert batch.sessions[0].session_id == 's1'
     assert batch.events[0].input_tokens == 100
-    assert batch.coverage[0].status == 'measured'
+    assert not batch.diagnostics
 
 
 @pytest.mark.parametrize('rows,expected,coverage',[
@@ -127,12 +132,12 @@ def test_cumulative_baselines_and_unavailable_usage(tmp_path,rows,expected,cover
     write_rollout(tmp_path,rows)
     batch=collect(tmp_path)
     assert sum(e.input_tokens for e in batch.events) == expected
-    if coverage:
-        assert batch.coverage[0].status == coverage
-        if coverage == 'partial':
-            assert batch.diagnostics
-    else:
-        assert batch.coverage == ()
+    if coverage == 'partial':
+        assert batch.diagnostics
+    elif coverage == 'measured':
+        assert not batch.diagnostics
+    elif coverage is None:
+        assert batch.sessions == ()
 
 
 @pytest.mark.parametrize('missing_id',[False,True])
@@ -144,7 +149,7 @@ def test_per_response_precedes_snapshots_and_duplicates(tmp_path,missing_id):
     batch=collect(tmp_path)
     assert len(batch.events) == 1
     assert batch.events[0].input_tokens == 100
-    assert batch.coverage[0].status == ('partial' if missing_id else 'measured')
+    assert bool(batch.diagnostics) == missing_id
     archived=tmp_path/'archived_sessions'/'renamed.jsonl'
     archived.parent.mkdir()
     archived.write_bytes(path.read_bytes())
@@ -160,7 +165,7 @@ def test_invalid_usage_is_diagnosed_without_aborting_other_entries(tmp_path,valu
     batch=collect(tmp_path)
     assert len(batch.events) == 1
     assert batch.events[0].input_tokens == 100
-    assert batch.coverage[0].status == 'partial'
+    assert batch.diagnostics
     assert any('usage' in d for d in batch.diagnostics)
 
 
@@ -171,7 +176,7 @@ def test_malformed_middle_and_scalar_rows_continue(tmp_path,bad):
         stream.write(bad+'\n'+json.dumps(usage_row('r1','2026-10-08T12:01:00Z',100))+'\n')
     batch=collect(tmp_path)
     assert len(batch.events) == 1
-    assert batch.coverage[0].status == 'partial'
+    assert batch.diagnostics
     assert batch.diagnostics
 
 
@@ -191,7 +196,7 @@ def test_missing_home_and_untouched_file_are_safe(tmp_path):
     old=datetime(2026,9,1,12,tzinfo=timezone.utc).timestamp()
     os.utime(path,(old,old))
     assert collect(tmp_path).sessions == ()
-    assert len(CodexCliCollector(tmp_path).collect_batch(date(2026,9,1)).events) == 1
+    assert len(CodexCliCollector(tmp_path).scan(date(2026,9,1)).events) == 1
 
 
 def test_model_switch_and_tool_call_deduplication(tmp_path):
@@ -201,8 +206,8 @@ def test_model_switch_and_tool_call_deduplication(tmp_path):
     write_rollout(tmp_path,[metadata(),context(),usage_row('r1','2026-10-08T12:01:00Z',100),tool,tool,
         context('different-model','t2'),row])
     batch=collect(tmp_path)
-    assert [(r.model,r.input_tokens,r.turns,r.tool_calls,r.context_peak_tokens) for r in batch.sessions] == [
-        ('gpt-5.3-codex',100,1,1,100),('different-model',50,1,0,50)]
+    assert [(r.model,r.input_tokens,r.turns,r.tool_calls,r.context_peak_tokens) for r in sorted(day_records(tmp_path), key=lambda r: r.model)] == [
+        ('different-model',50,1,0,50),('gpt-5.3-codex',100,1,1,100)]
 
 
 @pytest.mark.parametrize('kind',['compacted','rollback','task_aborted','task_failed'])
@@ -216,7 +221,7 @@ def test_zero_usage_is_measured_not_unavailable(tmp_path):
     write_rollout(tmp_path,[metadata(),context(),usage_row('r1','2026-10-08T12:01:00Z',0)])
     batch=collect(tmp_path)
     assert len(batch.events) == 1
-    assert batch.coverage[0].status == 'measured'
+    assert not batch.diagnostics
 
 
 def test_unknown_model_stays_unknown(tmp_path):
@@ -230,7 +235,7 @@ def test_ambiguous_descendant_snapshot_is_not_added_to_root(tmp_path):
     write_rollout(tmp_path,[meta,context(),snapshot(0),snapshot(100)])
     batch=collect(tmp_path)
     assert not batch.events
-    assert batch.coverage[0].status == 'partial'
+    assert batch.diagnostics
     assert batch.diagnostics
 
 
@@ -240,7 +245,7 @@ def test_invalid_snapshot_timestamp_does_not_advance_baseline(tmp_path):
     write_rollout(tmp_path,[metadata(),context(),snapshot(0),invalid,snapshot(150,2)])
     batch=collect(tmp_path)
     assert sum(e.input_tokens for e in batch.events) == 150
-    assert batch.coverage[0].status == 'partial'
+    assert batch.diagnostics
     assert batch.diagnostics
 
 
@@ -271,7 +276,7 @@ def test_invalid_response_payload_does_not_fall_back_to_cumulative_totals(tmp_pa
         dict(type='token_usage_record',timestamp='2026-10-08T12:01:00Z',payload=None)])
     batch=collect(tmp_path)
     assert not batch.events
-    assert batch.coverage[0].status == 'partial'
+    assert batch.diagnostics
     assert batch.diagnostics
 
 
@@ -298,7 +303,7 @@ def test_conversation_items_are_streamed_and_never_enter_batch(tmp_path):
         stream.write(json.dumps(usage_row('r1','2026-10-08T12:01:00Z',100))+'\n')
     batch=collect(tmp_path)
     assert len(batch.events) == 1
-    assert batch.sessions[0].input_tokens == 100
+    assert sum(r.input_tokens for r in day_records(tmp_path)) == 100
     assert 'private text' not in repr(batch)
 
 
@@ -312,16 +317,16 @@ def test_parent_cumulative_and_child_responses_never_double_count(tmp_path):
     write_rollout(tmp_path,[child,context(),own],'child.jsonl')
     batch=collect(tmp_path)
     assert sum(e.input_tokens for e in batch.events) == 50
-    assert next(c for c in batch.coverage if c.session_id=='parent').status == 'partial'
+    assert any('parent' in d for d in batch.diagnostics)
     assert any('descendant' in d for d in batch.diagnostics)
-    assert next(r for r in batch.sessions if r.session_id=='parent').input_tokens == 0
+    assert sum(r.input_tokens for r in day_records(tmp_path) if r.session_id=='parent') == 0
 
 
 @pytest.mark.parametrize('kind',['function_call','custom_tool_call'])
 def test_all_tool_formats_deduplicate_call_ids(tmp_path,kind):
     tool=dict(type='response_item',payload=dict(type=kind,call_id='c1'))
     write_rollout(tmp_path,[metadata(),context(),tool,tool,usage_row('r1','2026-10-08T12:01:00Z',100)])
-    assert collect(tmp_path).sessions[0].tool_calls == 1
+    assert sum(r.tool_calls for r in day_records(tmp_path)) == 1
 
 
 def test_clearing_into_new_session_keeps_both_identities(tmp_path):
@@ -338,47 +343,9 @@ def test_cache_categories_and_request_footprint_are_non_overlapping(tmp_path):
     row=usage_row('r1','2026-10-08T12:01:00Z',1000)
     row['payload']['usage'].update(cached_input_tokens=600,cache_write_input_tokens=100,output_tokens=200,reasoning_output_tokens=80)
     write_rollout(tmp_path,[metadata(),context(),row])
-    record=collect(tmp_path).sessions[0]
+    record=day_records(tmp_path)[0]
     assert (record.input_tokens,record.cache_read_tokens,record.cache_creation_tokens,record.output_tokens,record.reasoning_tokens) == (300,600,100,200,80)
     assert record.context_peak_tokens == 1200
-
-
-def test_later_descendant_discovery_retains_raw_history_but_excludes_ambiguous_totals(tmp_path):
-    import sqlite3
-    from src.stores.sqlite import SqliteStore
-    store=SqliteStore(tmp_path/'usage.db')
-    write_rollout(tmp_path,[metadata('parent'),context(),snapshot(0),snapshot(150)],'parent.jsonl')
-    store.upsert_batch(collect(tmp_path))
-    child=metadata('child')
-    child['payload']['source']={'subagent':{'parent_thread_id':'parent'}}
-    own=usage_row('child-r','2026-10-08T12:01:00Z',50)
-    own['payload'].update(session_id='child',thread_id='child')
-    write_rollout(tmp_path,[child,context(),own],'child.jsonl')
-    store.upsert_batch(collect(tmp_path))
-    with sqlite3.connect(tmp_path/'usage.db') as conn:
-        assert conn.execute('SELECT SUM(input_tokens) FROM reporting_usage').fetchone()[0] == 50
-        assert conn.execute('SELECT SUM(input_tokens) FROM sessions').fetchone()[0] == 50
-        assert conn.execute('SELECT SUM(input_tokens) FROM usage_events').fetchone()[0] == 200
-
-
-def test_late_child_excludes_persisted_parent_outside_lookback(tmp_path):
-    import os
-    import sqlite3
-    from src.stores.sqlite import SqliteStore
-    parent = write_rollout(tmp_path, [metadata(), context(), snapshot(0,0), snapshot(150)], 'parent.jsonl')
-    collector = CodexCliCollector(tmp_path)
-    store = SqliteStore(tmp_path/'usage.db')
-    store.upsert_batch(collector.collect_batch(date(2026,10,8)))
-    os.utime(parent, (0,0))
-    child = usage_row('child-response','2026-10-08T12:03:00Z',50)
-    child['payload'].update(session_id='child',thread_id='child')
-    child_meta=metadata('child')
-    child_meta['payload']['source']={'subagent':{'parent_thread_id':'s1'}}
-    write_rollout(tmp_path,[child_meta,context(),child], 'child.jsonl')
-    store.upsert_batch(collector.collect_batch(date(2026,10,8)))
-    with sqlite3.connect(tmp_path/'usage.db') as conn:
-        assert conn.execute('SELECT SUM(input_tokens) FROM reporting_usage').fetchone()[0] == 50
-        assert conn.execute("SELECT status FROM usage_coverage WHERE session_id='s1'").fetchone()[0] == 'partial'
 
 
 def test_incomplete_utf8_tail_preserves_other_files_and_retries(tmp_path):
@@ -390,10 +357,46 @@ def test_incomplete_utf8_tail_preserves_other_files_and_retries(tmp_path):
     split=raw.index('é'.encode('utf-8'))+1
     with path.open('ab') as stream: stream.write(raw[:split])
     collector=CodexCliCollector(tmp_path)
-    before=collector.collect_batch(date(2026,10,8))
+    before=collector.scan(date(2026,10,8))
     assert sum(e.input_tokens for e in before.events) == 100
     assert any('retry' in d for d in before.diagnostics)
     with path.open('ab') as stream: stream.write(raw[split:])
-    after=collector.collect_batch(date(2026,10,8))
+    after=collector.scan(date(2026,10,8))
     assert sum(e.input_tokens for e in after.events) == 150
     assert not after.diagnostics
+
+
+def test_tool_calls_are_counted_on_their_own_day(tmp_path):
+    rows = [metadata(), context(), usage_row('r1','2026-10-08T12:01:00Z',100),
+        dict(type='response_item', timestamp='2026-10-09T12:00:00Z',
+             payload=dict(type='function_call', call_id='c1')),
+        usage_row('r2','2026-10-09T12:01:00Z',50)]
+    write_rollout(tmp_path, rows)
+    records = sorted(CodexCliCollector(tmp_path, tz=ZoneInfo('America/Detroit'))
+                     .collect(date(2026,10,8)), key=lambda r: r.date)
+    assert [(r.date, r.tool_calls) for r in records] == [('2026-10-08',0), ('2026-10-09',1)]
+
+
+def test_session_without_usage_yields_one_zero_row_on_start_day(tmp_path):
+    write_rollout(tmp_path, [metadata(), context()])
+    records = list(CodexCliCollector(tmp_path, tz=ZoneInfo('America/Detroit')).collect(date(2026,10,8)))
+    assert [(r.date, r.input_tokens, r.output_tokens) for r in records] == [('2026-10-08',0,0)]
+
+
+def test_collect_prints_diagnostics(tmp_path, capsys):
+    write_rollout(tmp_path, [metadata(), context(), snapshot(100), snapshot(150,2)])
+    list(CodexCliCollector(tmp_path, tz=ZoneInfo('America/Detroit')).collect(date(2026,10,8)))
+    assert 'baseline' in capsys.readouterr().err
+
+
+def test_tool_only_day_carries_no_session_start_timestamps(tmp_path):
+    rows = [metadata(), context(), usage_row('r1','2026-10-08T12:01:00Z',100),
+        dict(type='response_item', timestamp='2026-10-09T12:00:00Z',
+             payload=dict(type='function_call', call_id='c1'))]
+    write_rollout(tmp_path, rows)
+    records = sorted(CodexCliCollector(tmp_path, tz=ZoneInfo('America/Detroit'))
+                     .collect(date(2026,10,8)), key=lambda r: r.date)
+    tool_only = records[1]
+    assert (tool_only.date, tool_only.tool_calls, tool_only.start_ts, tool_only.end_ts) == (
+        '2026-10-09', 1, None, None)
+

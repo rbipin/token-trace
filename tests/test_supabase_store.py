@@ -1,7 +1,7 @@
 """Tests for SupabaseStore."""
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -102,7 +102,7 @@ def test_upsert_uses_conflict_key():
         store.upsert([_rec()])
 
     kwargs = mock_client.table.return_value.upsert.call_args[1]
-    assert kwargs.get("on_conflict") == "session_id,source,model"
+    assert kwargs.get("on_conflict") == "session_id,source,model,date"
 
 
 def test_upsert_targets_correct_table():
@@ -163,39 +163,22 @@ def test_upsert_includes_tool_and_token_detail_columns():
     assert rows[0]["context_peak_tokens"] == 2100
 
 
-def test_usage_events_target_explicit_table_with_independent_identity():
-    from dataclasses import replace
-    from usage_helpers import event
-    mock_client=MagicMock()
-    with patch('src.stores.supabase._create_client',return_value=mock_client):
-        store=SupabaseStore('https://x.supabase.co','secret',usage_table='events')
-        assert store.upsert_events([replace(event(), turn_id='turn-1')]) == 1
-    mock_client.table.assert_called_with('events')
-    rows=mock_client.table.return_value.upsert.call_args.args[0]
-    assert rows[0]['date'] == '2026-10-08'
-    assert rows[0]['utc_offset_minutes'] == 0
-    assert rows[0]['event_id'] == 'r1'
-    assert 'turn_id' not in rows[0]
-    assert 'response_id' not in rows[0]
-    assert mock_client.table.return_value.upsert.call_args.kwargs['on_conflict'] == 'source,session_id,event_id'
-    assert not {'cwd','prompt','content','arguments','reasoning_text'} & rows[0].keys()
+def test_upsert_deletes_pushed_sessions_before_upsert():
+    mock_client = MagicMock()
+    with patch("src.stores.supabase._create_client", return_value=mock_client):
+        _make_store().upsert([_rec("s1"), _rec("s2"), _rec("s1", source="codex_cli")])
+    table = mock_client.table.return_value
+    assert [name for name, *_ in table.mock_calls if name in ("delete", "upsert")] == [
+        "delete", "delete", "upsert"]
+    eq = table.delete.return_value.eq
+    assert eq.call_args_list == [call("source", "claude"), call("source", "codex_cli")]
+    assert eq.return_value.in_.call_args_list == [
+        call("session_id", ["s1", "s2"]), call("session_id", ["s1"])]
 
 
-def test_event_aware_session_push_includes_coverage():
-    from src.usage import CollectionBatch, UsageCoverage
-    mock_client=MagicMock()
-    with patch('src.stores.supabase._create_client',return_value=mock_client):
-        store=SupabaseStore('https://x.supabase.co','secret',usage_table='events')
-        rec=_rec(source='codex_cli')
-        store.upsert_session_batch(CollectionBatch((rec,),coverage=(UsageCoverage('codex_cli','s1','partial','missing history'),)))
-    row=mock_client.table.return_value.upsert.call_args.args[0][0]
-    assert row['usage_coverage'] == 'partial'
-    assert row['usage_coverage_reason'] == 'missing history'
-
-
-def test_events_disabled_without_usage_table():
-    from usage_helpers import event
-    store=_make_store()
-    assert store.supports_usage_events is False
-    with pytest.raises(ValueError,match='usage_table'):
-        store.upsert_events([event()])
+def test_large_push_deletes_in_chunks():
+    mock_client = MagicMock()
+    with patch("src.stores.supabase._create_client", return_value=mock_client):
+        _make_store().upsert([_rec(f"s{i}") for i in range(250)])
+    in_ = mock_client.table.return_value.delete.return_value.eq.return_value.in_
+    assert [len(c.args[1]) for c in in_.call_args_list] == [100, 100, 50]

@@ -1,17 +1,77 @@
 """Read Codex active/archive rollouts without retaining conversation content."""
 from __future__ import annotations
 
-from dataclasses import replace
-from datetime import date, datetime, tzinfo
+from collections import Counter
+from dataclasses import dataclass, replace
+from datetime import date, datetime, timezone, tzinfo
 import hashlib
 import json
 from pathlib import Path
-from typing import Iterator
+import sys
+from typing import Iterator, Literal
 
 from ..model_normalize import normalize_model
 from ..models import SessionRecord
 from ..repo_identity import resolve_repo_slug
-from ..usage import AMBIGUOUS_DESCENDANT_USAGE, CollectionBatch, UsageCoverage, UsageEvent, event_time, normalize_usage
+
+AMBIGUOUS_DESCENDANT_USAGE = "ambiguous descendant cumulative usage ownership"
+
+
+@dataclass(frozen=True)
+class UsageEvent:
+    session_id: str
+    source: str
+    event_id: str
+    model: str
+    timestamp: str
+    date: str
+    utc_offset_minutes: int
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
+    reasoning_tokens: int = 0
+    turn_id: str | None = None
+    response_id: str | None = None
+    canonical_model: str | None = None
+    context: str = 'personal'
+    attribution: Literal['response', 'snapshot_delta'] = 'response'
+
+    @property
+    def key(self) -> tuple[str, str, str]:
+        return self.source, self.session_id, self.event_id
+
+
+def normalize_usage(usage: dict) -> dict[str, int]:
+    fields = ('input_tokens', 'cached_input_tokens', 'cache_write_input_tokens',
+              'output_tokens', 'reasoning_output_tokens')
+    values = {name: usage.get(name, 0) for name in fields}
+    if any(type(value) is not int or value < 0 for value in values.values()):
+        raise ValueError('usage counts must be nonnegative integers')
+    uncached = values['input_tokens'] - values['cached_input_tokens'] - values['cache_write_input_tokens']
+    if uncached < 0 or values['reasoning_output_tokens'] > values['output_tokens']:
+        raise ValueError('usage subsets exceed their totals')
+    return dict(input_tokens=uncached, output_tokens=values['output_tokens'],
+        cache_read_tokens=values['cached_input_tokens'],
+        cache_creation_tokens=values['cache_write_input_tokens'],
+        reasoning_tokens=values['reasoning_output_tokens'])
+
+def event_time(timestamp: str, tz: tzinfo | None = None) -> tuple[str, str, int]:
+    dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+    if dt.tzinfo is None:
+        raise ValueError('usage timestamp requires a timezone')
+    local = dt.astimezone(tz)
+    return (dt.astimezone(timezone.utc).isoformat(), local.date().isoformat(),
+            int(local.utcoffset().total_seconds() / 60))
+
+
+@dataclass(frozen=True)
+class CodexScan:
+    """Deduplicated Codex usage for the selected rollouts, before day aggregation."""
+    sessions: tuple[SessionRecord, ...] = ()   # zero-usage base per (session, model), dated on the start day
+    events: tuple[UsageEvent, ...] = ()
+    tools: tuple[tuple[str, str, str, str], ...] = ()  # (session_id, call_id, model, day)
+    diagnostics: tuple[str, ...] = ()
 
 
 class CodexCliCollector:
@@ -23,10 +83,13 @@ class CodexCliCollector:
         self._tz = tz
 
     def collect(self, since: date) -> Iterator[SessionRecord]:
-        yield from self.collect_batch(since).sessions
+        scan = self.scan(since)
+        for message in scan.diagnostics:
+            print(f"Warning: {message}", file=sys.stderr)
+        yield from self._day_records(scan)
 
-    def collect_batch(self, since: date) -> CollectionBatch:
-        events, summaries, coverages, diagnostics = {}, {}, {}, []
+    def scan(self, since: date) -> CodexScan:
+        events, bases, tools, diagnostics = {}, {}, {}, []
         parents = {}
         for directory in (self._home/'sessions', self._home/'archived_sessions'):
             try:
@@ -38,36 +101,23 @@ class CodexCliCollector:
                 try:
                     if datetime.fromtimestamp(path.stat().st_mtime).astimezone(self._tz).date() < since:
                         continue
-                    batch = self._parse(path, parents)
+                    parsed = self._parse(path, parents)
                 except OSError:
                     diagnostics.append('codex_cli: cannot read rollout; other sessions continue')
                     continue
-                diagnostics.extend(batch.diagnostics)
-                for event in batch.events:
+                diagnostics.extend(parsed.diagnostics)
+                for event in parsed.events:
                     events[event.key] = event
-                for rec in batch.sessions:
-                    summaries[rec.key] = rec
-                for coverage in batch.coverage:
-                    key=(coverage.source,coverage.session_id)
-                    previous=coverages.get(key)
-                    if previous is None or {'unavailable':0,'partial':1,'measured':2}[coverage.status] > {'unavailable':0,'partial':1,'measured':2}[previous.status]:
-                        coverages[key]=coverage
+                for rec in parsed.sessions:
+                    bases[(rec.session_id, rec.model)] = rec
+                for tool in parsed.tools:
+                    tools[tool[:2]] = tool
         for parent in set(parents.values()):
             if not any(e.session_id==parent and e.attribution=='response' for e in events.values()):
                 events={key:e for key,e in events.items() if not (e.session_id==parent and e.attribution=='snapshot_delta')}
-                coverages[(self.source,parent)]=UsageCoverage(self.source,parent,'partial',AMBIGUOUS_DESCENDANT_USAGE)
                 diagnostics.append(f'codex_cli [{parent}]: {AMBIGUOUS_DESCENDANT_USAGE}')
-                for key,rec in list(summaries.items()):
-                    if rec.session_id==parent:
-                        summaries[key]=replace(rec,input_tokens=0,output_tokens=0,cache_read_tokens=0,
-                            cache_creation_tokens=0,reasoning_tokens=0,turns=0,context_peak_tokens=0)
-        # Active/archive duplicate copies may differ in completeness; totals are from the deduplicated events.
-        for key,rec in list(summaries.items()):
-            owned=[e for e in events.values() if (e.session_id,e.source,e.model)==key]
-            if owned:
-                summaries[key]=self._summary(rec,owned)
-        return CollectionBatch(tuple(summaries.values()),tuple(sorted(events.values(),key=lambda e:(e.timestamp,e.key))),
-                               tuple(coverages.values()),tuple(dict.fromkeys(diagnostics)))
+        return CodexScan(tuple(bases.values()), tuple(sorted(events.values(), key=lambda e: (e.timestamp, e.key))),
+                         tuple(tools.values()), tuple(dict.fromkeys(diagnostics)))
 
     def _rows(self, path: Path, issue):
         with path.open('rb') as stream:
@@ -82,7 +132,7 @@ class CodexCliCollector:
                 except (ValueError, UnicodeError):
                     issue('incomplete trailing entry; retry on next collection' if not line.endswith(b'\n') else 'malformed rollout entry')
 
-    def _parse(self, path: Path, parents: dict | None = None) -> CollectionBatch:
+    def _parse(self, path: Path, parents: dict | None = None) -> CodexScan:
         issues=[]
         def issue(reason):
             if reason not in issues and len(issues)<8:
@@ -108,14 +158,14 @@ class CodexCliCollector:
         if meta is None:
             if saw_row:
                 issue('missing session metadata')
-            return CollectionBatch(diagnostics=tuple('codex_cli: '+r for r in issues))
+            return CodexScan(diagnostics=tuple('codex_cli: '+r for r in issues))
         sid=meta.get('id')
         try:
             if not isinstance(sid,str) or not sid:
                 raise ValueError('missing session identity')
             start, start_day, _ = event_time(meta.get('timestamp'),self._tz)
         except (ValueError, TypeError, AttributeError):
-            return CollectionBatch(diagnostics=('codex_cli: invalid session identity or timestamp',))
+            return CodexScan(diagnostics=('codex_cli: invalid session identity or timestamp',))
         source=meta.get('source')
         descendant=isinstance(source,dict) and 'subagent' in source
         if descendant and parents is not None:
@@ -143,7 +193,7 @@ class CodexCliCollector:
             if kind=='response_item' and payload.get('type') in ('function_call','custom_tool_call'):
                 call_id=payload.get('call_id')
                 if isinstance(call_id,str) and call_id:
-                    tools.setdefault(call_id,current_model)
+                    tools.setdefault(call_id,(current_model,self._day(row,start_day)))
                 continue
             counts, attribution, rid, eid = None, 'response', None, None
             turn=payload.get('turn_id') or current_turn
@@ -226,20 +276,37 @@ class CodexCliCollector:
                 issue('conflicting duplicate usage response')
                 continue
             owned[eid]=event
-        status='partial' if issues else ('measured' if saw_usage else 'unavailable')
-        reason='; '.join(issues) if issues else ('no recorded usage' if status=='unavailable' else None)
         models=dict.fromkeys(e.model for e in owned.values()) or {current_model:None}
-        records=[]
-        for model in models:
-            base=SessionRecord(sid,self.source,model=model,date=start_day,start_ts=start,end_ts=start,
-                project=project,tool_calls=sum(m==model for m in tools.values()),canonical_model=normalize_model(model,self.source))
-            records.append(self._summary(base,[e for e in owned.values() if e.model==model]))
-        return CollectionBatch(tuple(records),tuple(owned.values()),(UsageCoverage(self.source,sid,status,reason),),
+        bases=tuple(SessionRecord(sid,self.source,model=model,date=start_day,start_ts=start,end_ts=start,
+            project=project,canonical_model=normalize_model(model,self.source)) for model in models)
+        return CodexScan(bases,tuple(owned.values()),
+            tuple((sid,call_id,model,day) for call_id,(model,day) in tools.items()),
             tuple(f'codex_cli [{sid}]: {r}' for r in issues))
 
     @staticmethod
     def _fingerprint(value) -> str:
         return hashlib.sha256(json.dumps(value,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+
+    def _day(self, row, fallback: str) -> str:
+        try:
+            return event_time(row.get('timestamp'), self._tz)[1]
+        except (ValueError, TypeError, AttributeError):
+            return fallback
+
+    @classmethod
+    def _day_records(cls, scan: CodexScan) -> Iterator[SessionRecord]:
+        events: dict[tuple[str, str, str], list[UsageEvent]] = {}
+        for e in scan.events:
+            events.setdefault((e.session_id, e.model, e.date), []).append(e)
+        tools = Counter((sid, model, day) for sid, _, model, day in scan.tools)
+        for base in scan.sessions:
+            owner = (base.session_id, base.model)
+            days = sorted({d for s, m, d in [*events, *tools] if (s, m) == owner}) or [base.date]
+            for day in days:
+                rec = replace(base, date=day, tool_calls=tools[(*owner, day)])
+                if (*owner, day) not in events:  # tool-only day: no usage timestamps
+                    rec = replace(rec, start_ts=None, end_ts=None) if day != base.date else rec
+                yield cls._summary(rec, events.get((*owner, day), []))
 
     @staticmethod
     def _summary(base, events):
@@ -247,5 +314,6 @@ class CodexCliCollector:
             return base
         counts={k:sum(getattr(e,k) for e in events) for k in
                 ('input_tokens','output_tokens','cache_read_tokens','cache_creation_tokens','reasoning_tokens')}
-        return replace(base,**counts,turns=len(events),end_ts=max(e.timestamp for e in events),
+        return replace(base,**counts,turns=len(events),
+            start_ts=min(e.timestamp for e in events),end_ts=max(e.timestamp for e in events),
             context_peak_tokens=max(e.input_tokens+e.cache_read_tokens+e.cache_creation_tokens+e.output_tokens for e in events))

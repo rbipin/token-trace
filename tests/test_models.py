@@ -9,9 +9,9 @@ def _rec(**kwargs) -> SessionRecord:
     return SessionRecord(**defaults)
 
 
-def test_key_is_session_source_model():
-    r = _rec(session_id="abc", source="copilot_cli", model="gpt-4o")
-    assert r.key == ("abc", "copilot_cli", "gpt-4o")
+def test_key_is_session_source_model_date():
+    r = _rec(session_id="abc", source="copilot_cli", model="gpt-4o", date="2026-10-08")
+    assert r.key == ("abc", "copilot_cli", "gpt-4o", "2026-10-08")
 
 
 def test_default_fields():

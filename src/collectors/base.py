@@ -5,7 +5,6 @@ from datetime import date, datetime, timezone
 from typing import Iterator, Protocol
 
 from ..models import SessionRecord
-from ..usage import CollectionBatch
 
 
 class ActivityCollector(Protocol):
@@ -15,13 +14,6 @@ class ActivityCollector(Protocol):
 
     def collect(self, since: date) -> Iterator[SessionRecord]:
         ...
-
-
-class BatchActivityCollector(Protocol):
-    """Optional capability for sources with timestamped usage."""
-    source: str
-
-    def collect_batch(self, since: date) -> CollectionBatch: ...
 
 
 # ── timestamp helpers ────────────────────────────────────────────────────────
