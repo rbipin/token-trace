@@ -218,28 +218,28 @@ a **remote store** (e.g. Supabase via `tokentracer sync`), install with the
 store's extra — e.g. `tokentracer[supabase]` — otherwise `collect`/`sync`
 will warn that the store's client library is missing.
 
-**From a GitHub Release** (replace `0.1.0` with the latest version):
+**From a GitHub Release** (replace `{version}` with the latest release version, without the `v`, for example `X.Y.Z`):
 
 ```bash
 # uv
-uv tool install https://github.com/rbipin/TokenTrace/releases/download/v0.1.0/tokentracer-0.1.0-py3-none-any.whl
+uv tool install https://github.com/rbipin/TokenTrace/releases/download/v{version}/tokentracer-{version}-py3-none-any.whl
 
 # pip
-pip install https://github.com/rbipin/TokenTrace/releases/download/v0.1.0/tokentracer-0.1.0-py3-none-any.whl
+pip install https://github.com/rbipin/TokenTrace/releases/download/v{version}/tokentracer-{version}-py3-none-any.whl
 
 # from source at a tag
-uv tool install git+https://github.com/rbipin/TokenTrace@{version}
-pip install git+https://github.com/rbipin/TokenTrace@v0.1.0
+uv tool install git+https://github.com/rbipin/TokenTrace@v{version}
+pip install git+https://github.com/rbipin/TokenTrace@v{version}
 
 # with the Supabase store extra
-uv tool install "tokentracer[supabase] @ git+https://github.com/rbipin/TokenTrace@v0.1.0"
-pip install "tokentracer[supabase] @ git+https://github.com/rbipin/TokenTrace@v0.1.0"
+uv tool install "tokentracer[supabase] @ git+https://github.com/rbipin/TokenTrace@v{version}"
+pip install "tokentracer[supabase] @ git+https://github.com/rbipin/TokenTrace@v{version}"
 ```
 
 To add an extra to an existing uv tool install, re-run with `--force`:
 
 ```bash
-uv tool install --force "tokentracer[supabase] @ git+https://github.com/rbipin/TokenTrace@v0.1.0"
+uv tool install --force "tokentracer[supabase] @ git+https://github.com/rbipin/TokenTrace@v{version}"
 ```
 
 **From the latest main branch:**
