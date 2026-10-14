@@ -618,9 +618,26 @@ No other module needs to change.
 
 ### Releasing (maintainers)
 
-1. Bump `version` in `pyproject.toml` and commit to `main`.
-2. `git tag v<version> && git push origin v<version>`.
-3. CI tests, verifies the tag matches the version, builds, and publishes the GitHub Release automatically.
+Releases are published from the GitHub UI. The tag is the source of truth for
+the version; you do not edit `pyproject.toml` by hand.
+
+1. Merge your changes to `main`. Move the `[Unreleased]` entries in
+   `CHANGELOG.md` under a new `## [X.Y.Z] - YYYY-MM-DD` heading.
+2. Wait for the `Frontend Build` workflow to finish. It may add a
+   `Build dashboard frontend [skip ci]` commit to `main`.
+3. On GitHub, open **Releases → Draft a new release**.
+4. Create the tag `vX.Y.Z` (exactly `v` + three numbers) on `main`. Click
+   **Generate release notes**, then click **Publish release**.
+5. The `Release` workflow runs on publish. It:
+   - runs the tests;
+   - builds the frontend;
+   - sets `version` in `pyproject.toml` from the tag and builds the wheel and sdist;
+   - attaches both files to the release;
+   - commits `chore(release): bump version to X.Y.Z [skip ci]` to `main`.
+
+If the workflow does not start, check the **Actions** tab. If the bump commit
+cannot push, check the branch protection rules on `main`: they must allow the
+`github-actions[bot]` push. The wheel is still attached in that case.
 
 ---
 

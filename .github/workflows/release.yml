@@ -1,8 +1,8 @@
 name: Release
 
 on:
-  push:
-    tags: ["v*"]
+  release:
+    types: [published]
 
 jobs:
   test:
@@ -31,22 +31,44 @@ jobs:
           cd frontend
           pnpm install --frozen-lockfile
           pnpm run build
-      - name: Verify tag matches pyproject.toml version
-        run: |
-          python - <<'PY'
-          import os, sys, tomllib, pathlib
-          version = tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"]
-          tag = os.environ["GITHUB_REF_NAME"]
-          if tag.removeprefix("v") != version:
-              sys.exit(f"Tag {tag} does not match pyproject.toml version {version}. "
-                       f"Bump pyproject.toml or retag, then push again.")
-          print(f"Version check OK: {version}")
-          PY
+      - name: Set pyproject.toml version from tag
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: python .github/scripts/set_version.py "$TAG"
       - name: Build wheel and sdist
         run: |
           pip install build
           python -m build
-      - name: Create GitHub Release
+      - name: Attach artifacts to the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --generate-notes
+          TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$TAG" dist/* --clobber
+
+  bump-version:
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Commit released version to the default branch
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          python .github/scripts/set_version.py "$TAG"
+          if [ -n "$(git status --porcelain pyproject.toml)" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add pyproject.toml
+            git commit -m "chore(release): bump version to ${TAG#v} [skip ci]"
+            git pull --rebase
+            git push
+          else
+            echo "pyproject.toml already at ${TAG#v} — nothing to commit."
+          fi
