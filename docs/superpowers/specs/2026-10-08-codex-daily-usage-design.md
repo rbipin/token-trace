@@ -1,3 +1,5 @@
+> Superseded by 2026-10-12-daily-session-rows-design.md.
+
 # Codex session collection and daily usage attribution
 
 ## Goal and agreed behavior
