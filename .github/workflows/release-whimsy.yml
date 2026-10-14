@@ -1,0 +1,43 @@
+name: Release whimsy
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  build:
+    if: startsWith(github.event.release.tag_name, 'whimsy-v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Set version from tag
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: python .github/scripts/set_whimsy_version.py "$TAG"
+      - name: Run whimsy tests
+        run: |
+          pip install pytest -e packages/whimsy
+          python -m pytest packages/whimsy/tests -q
+      - name: Build sdist and wheel
+        run: |
+          pip install build
+          python -m build packages/whimsy
+      - uses: actions/upload-artifact@v4
+        with:
+          name: whimsy-dist
+          path: packages/whimsy/dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: whimsy-dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
